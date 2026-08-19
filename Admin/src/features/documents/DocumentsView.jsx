@@ -2,12 +2,27 @@
 import React, { useState } from 'react';
 import Modal from '../../components/Modal';
 import Badge from '../../components/Badge';
-import { FileText, Plus, Edit2, Trash2, Clock, DollarSign, CheckCircle, Eye, EyeOff, AlertTriangle, Lock, Loader2 } from 'lucide-react';
+import {
+  FileText,
+  Plus,
+  Edit2,
+  Trash2,
+  DollarSign,
+  CheckCircle,
+  Eye,
+  EyeOff,
+  AlertTriangle,
+  Lock,
+  Loader2,
+  Printer,
+  Sliders,
+} from 'lucide-react';
 import { formatCurrency, sanitizeInput } from '../../core/security';
-import { supabase, isSupabaseConfigured } from '../../core/supabase';
 import { StorageService } from '../../core/storage';
+import DocumentManagement from './DocumentManagement';
 
 export default function DocumentsView({ docTypes = [], onSaveDocType, onDeleteDocType, currentUser, isDarkMode }) {
+  const [subTab, setSubTab] = useState('generator'); // 'generator' | 'info'
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingDoc, setEditingDoc] = useState(null);
 
@@ -37,7 +52,6 @@ export default function DocumentsView({ docTypes = [], onSaveDocType, onDeleteDo
     title: '',
     description: '',
     fee: 0,
-    processing_days: 1,
     requirementsStr: '',
     is_active: true,
   });
@@ -85,8 +99,7 @@ export default function DocumentsView({ docTypes = [], onSaveDocType, onDeleteDo
       title: '',
       description: '',
       fee: 0,
-      processing_days: 1,
-      requirementsStr: 'Valid Government Issued ID\nProof of Address / Utility Bill',
+      requirementsStr: 'Valid Government Issued ID\nProof of Residency / Utility Bill',
       is_active: true,
     });
     setIsModalOpen(true);
@@ -99,7 +112,6 @@ export default function DocumentsView({ docTypes = [], onSaveDocType, onDeleteDo
       title: doc.title || '',
       description: doc.description || '',
       fee: doc.fee || 0,
-      processing_days: doc.processing_days || 1,
       requirementsStr: Array.isArray(doc.requirements) ? doc.requirements.join('\n') : '',
       is_active: doc.is_active !== false,
     });
@@ -127,7 +139,6 @@ export default function DocumentsView({ docTypes = [], onSaveDocType, onDeleteDo
       title: sanitizeInput(formData.title),
       description: sanitizeInput(formData.description),
       fee: Number(formData.fee) || 0,
-      processing_days: Number(formData.processing_days) || 1,
       requirements: requirementsList,
       is_active: formData.is_active,
     };
@@ -152,7 +163,7 @@ export default function DocumentsView({ docTypes = [], onSaveDocType, onDeleteDo
 
     setIsSaving(true);
     setIsProcessing(true);
-    setProcessingTitle(editingDoc ? 'Updating Document Guidelines...' : 'Adding Document Type...');
+    setProcessingTitle(editingDoc ? 'Updating Document Info...' : 'Adding Document Type...');
     setProcessingMessage('Verifying credentials & saving document information to database...');
 
     try {
@@ -187,7 +198,7 @@ export default function DocumentsView({ docTypes = [], onSaveDocType, onDeleteDo
 
     setIsDeleting(true);
     setIsProcessing(true);
-    setProcessingTitle('Removing Document Guidelines...');
+    setProcessingTitle('Removing Document Info...');
     setProcessingMessage(`Deleting "${deletingDoc.title}" from system records...`);
 
     try {
@@ -199,7 +210,7 @@ export default function DocumentsView({ docTypes = [], onSaveDocType, onDeleteDo
       setDeletingDoc(null);
     } catch (err) {
       console.error('Error deleting document type:', err);
-      setDeleteAuthError('Failed to remove document template.');
+      setDeleteAuthError('Failed to remove document type.');
     } finally {
       setIsDeleting(false);
       setIsProcessing(false);
@@ -226,325 +237,420 @@ export default function DocumentsView({ docTypes = [], onSaveDocType, onDeleteDo
         </div>
       )}
 
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-xs">
-        <div>
-          <h2 className="text-xl font-bold text-slate-900">Document Guidelines & Information</h2>
-          <p className="text-xs text-slate-500 mt-1">
-            Maintain operational guidelines, fees, turnaround SLA, and requirement requirements for barangay issuance.
-          </p>
-        </div>
+      {/* Sub-Tab Navigation Header */}
+      <div className="flex items-center gap-3 bg-white p-2 rounded-2xl border border-slate-200 shadow-xs">
         <button
-          onClick={openCreateModal}
-          className="inline-flex items-center space-x-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-md shadow-blue-900/20 transition-colors cursor-pointer"
+          onClick={() => setSubTab('generator')}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            subTab === 'generator'
+              ? 'bg-blue-600 text-white shadow-md shadow-blue-200'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
         >
-          <Plus className="w-4 h-4" />
-          <span>Add Document Type</span>
+          <Printer size={16} />
+          <span>Document Generator & Print</span>
+        </button>
+
+        <button
+          onClick={() => setSubTab('info')}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            subTab === 'info'
+              ? 'bg-blue-600 text-white shadow-md shadow-blue-200'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Sliders size={16} />
+          <span>Document Information Management</span>
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {docTypes.map((doc) => (
-          <div key={doc.id || doc.code} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs flex flex-col justify-between space-y-4 hover:shadow-md transition-shadow">
+      {/* SUB-TAB 1: DOCUMENT GENERATOR & PRINT */}
+      {subTab === 'generator' && <DocumentManagement docTypes={docTypes} />}
+
+      {/* SUB-TAB 2: DOCUMENT INFORMATION MANAGEMENT */}
+      {subTab === 'info' && (
+        <>
+          {/* Header Banner */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-xs">
             <div>
-              <div className="flex items-start justify-between">
-                <div>
-                  <span className="font-mono text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                    {doc.code}
-                  </span>
-                  <h3 className="text-lg font-bold text-slate-900 mt-2">{doc.title}</h3>
-                </div>
-                <Badge variant={doc.is_active ? 'active' : 'inactive'}>
-                  {doc.is_active ? 'Active' : 'Inactive'}
-                </Badge>
-              </div>
-
-              <p className="text-xs text-slate-600 mt-2 leading-relaxed">{doc.description}</p>
-
-              <div className="grid grid-cols-2 gap-3 mt-4 p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
-                <div>
-                  <p className="text-[10px] uppercase font-bold text-slate-400">Processing Fee</p>
-                  <p className="font-bold text-slate-800">{doc.fee > 0 ? formatCurrency(doc.fee) : 'Free'}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase font-bold text-slate-400">SLA Turnaround</p>
-                  <p className="font-bold text-slate-800">{doc.processing_days} Business Day(s)</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-slate-100 flex items-center justify-end space-x-2">
-              <button
-                onClick={() => openEditModal(doc)}
-                className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center space-x-1 cursor-pointer"
-              >
-                <Edit2 className="w-3.5 h-3.5" />
-                <span>Edit Info</span>
-              </button>
-              {onDeleteDocType && (
-                <button
-                  onClick={() => openDeleteModal(doc)}
-                  className="px-3 py-1.5 text-xs font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg flex items-center space-x-1 cursor-pointer"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Remove</span>
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Dedicated Security Verification - Save/Create Template Modal */}
-      <Modal
-        isOpen={isSaveSecurityModalOpen}
-        onClose={() => {
-          setIsSaveSecurityModalOpen(false);
-          setSavePasswordInput('');
-          setSaveAuthError('');
-          setIsModalOpen(true);
-        }}
-        title={`Security Verification - ${editingDoc ? 'Update' : 'Create'} Certificate Template`}
-        darkMode={isDarkMode}
-      >
-        <div className="space-y-4 text-xs">
-          <div className="p-4 bg-blue-950/60 border border-blue-800/80 rounded-xl text-blue-200 flex items-start space-x-3">
-            <AlertTriangle className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-bold text-sm text-blue-100">{editingDoc ? 'Authorize Template Update' : 'Authorize New Template Creation'}</p>
-              <p className="text-xs text-blue-300 mt-1">
-                Please confirm your logged-in account password to authorize {editingDoc ? 'updating' : 'creating'} certificate template guidelines for{' '}
-                <strong className="text-white">{formData.title || 'Certificate Template'}</strong> (
-                <span className="font-mono text-blue-200">{formData.code || 'CODE'}</span>).
+              <h2 className="text-xl font-bold text-slate-900">Document Information Management</h2>
+              <p className="text-xs text-slate-500 mt-1">
+                Configure barangay document types, issuance fees, and required attachment guidelines for resident requests.
               </p>
             </div>
-          </div>
-
-          {saveAuthError && (
-            <div className="p-3 bg-red-950/80 border border-red-800 text-red-200 rounded-xl flex items-center space-x-2 font-medium">
-              <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
-              <span>{saveAuthError}</span>
-            </div>
-          )}
-
-          <div className="p-3.5 rounded-xl border bg-slate-950/80 border-slate-800 space-y-2">
-            <label className={`block font-bold text-xs flex items-center ${isDarkMode ? 'text-blue-300' : 'text-blue-700'}`}>
-              <Lock className="w-3.5 h-3.5 mr-1" /> Logged-in Account Password (Required to Authorize)
-            </label>
-            <div className="relative">
-              <input
-                type={showSavePassword ? 'text' : 'password'}
-                required
-                autoFocus
-                value={savePasswordInput}
-                onChange={(e) => {
-                  setSavePasswordInput(e.target.value);
-                  setSaveAuthError('');
-                }}
-                placeholder="Enter your logged-in account password"
-                className={`w-full pl-3 pr-10 py-2 border rounded-xl focus:ring-2 focus:ring-blue-500 font-mono text-xs ${
-                  isDarkMode ? 'bg-slate-950 border-slate-800 text-white' : 'bg-white border-slate-300 text-slate-900'
-                }`}
-              />
-              <button
-                type="button"
-                onClick={() => setShowSavePassword(!showSavePassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
-              >
-                {showSavePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-
-          <div className="pt-3 border-t border-slate-800 flex items-center justify-end space-x-3">
             <button
-              type="button"
-              disabled={isSaving}
-              onClick={() => {
-                setIsSaveSecurityModalOpen(false);
-                setSavePasswordInput('');
-                setSaveAuthError('');
-                setIsModalOpen(true);
-              }}
-              className={`px-4 py-2 font-medium rounded-lg cursor-pointer ${
-                isDarkMode ? 'text-slate-400 hover:text-white hover:bg-slate-800' : 'text-slate-600 hover:bg-slate-100'
-              }`}
+              onClick={openCreateModal}
+              className="inline-flex items-center space-x-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-md shadow-blue-900/20 transition-colors cursor-pointer"
             >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={isSaving || !savePasswordInput.trim()}
-              onClick={handleSaveExecute}
-              className="px-4 py-2 font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg shadow-md shadow-blue-900/20 disabled:opacity-50 flex items-center space-x-2 cursor-pointer"
-            >
-              {isSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              <span>Authorize & Save</span>
+              <Plus className="w-4 h-4" />
+              <span>Add New Document Type</span>
             </button>
           </div>
-        </div>
-      </Modal>
 
-      {/* Dedicated Security Delete Modal */}
-      <Modal
-        isOpen={isDeleteModalOpen}
-        onClose={() => {
-          setIsDeleteModalOpen(false);
-          setDeletePasswordInput('');
-          setDeleteAuthError('');
-        }}
-        title="Security Verification - Delete Certificate Template"
-        darkMode={isDarkMode}
-      >
-        {deletingDoc && (
-          <div className="space-y-4 text-xs">
-            <div className="p-4 bg-rose-950/60 border border-rose-800/80 rounded-xl text-rose-200 flex items-start space-x-3">
-              <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-bold text-sm text-rose-100">Permanent Template Deletion</p>
-                <p className="text-xs text-rose-300 mt-1">
-                  Are you sure you want to permanently delete the document template for{' '}
-                  <strong className="text-white">{deletingDoc.title}</strong> (
-                  <span className="font-mono text-rose-200">{deletingDoc.code}</span>)?
+          {/* Document Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {docTypes.length === 0 ? (
+              <div className="md:col-span-2 bg-white rounded-2xl border border-slate-200 p-12 text-center text-slate-400">
+                <FileText className="w-10 h-10 mx-auto mb-3 opacity-40 text-slate-400" />
+                <h3 className="text-base font-bold text-slate-700">No Document Information Types</h3>
+                <p className="text-xs text-slate-500 mt-1">
+                  Click "Add New Document Type" above to configure barangay document guidelines.
                 </p>
               </div>
-            </div>
+            ) : (
+              docTypes.map((doc) => (
+                <div
+                  key={doc.id || doc.code}
+                  className={`bg-white rounded-2xl border ${
+                    doc.is_active ? 'border-slate-200' : 'border-slate-300 bg-slate-50/60 opacity-80'
+                  } p-6 shadow-xs flex flex-col justify-between space-y-4 hover:shadow-md transition-shadow`}
+                >
+                  <div>
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <span className="font-mono text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                          {doc.code}
+                        </span>
+                        <h3 className="text-lg font-bold text-slate-900 mt-2">{doc.title}</h3>
+                      </div>
+                      <Badge variant={doc.is_active ? 'active' : 'inactive'}>
+                        {doc.is_active ? 'Active' : 'Inactive'}
+                      </Badge>
+                    </div>
 
-            {deleteAuthError && (
-              <div className="p-3 bg-red-950/80 border border-red-800 text-red-200 rounded-xl flex items-center space-x-2 font-medium">
-                <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
-                <span>{deleteAuthError}</span>
-              </div>
+                    <p className="text-xs text-slate-600 mt-2 leading-relaxed">{doc.description}</p>
+
+                    {/* Issuance Fee Info */}
+                    <div className="mt-4 p-3 bg-slate-50 rounded-xl border border-slate-100 flex items-center space-x-2">
+                      <DollarSign className="w-4 h-4 text-emerald-600" />
+                      <div>
+                        <p className="text-[10px] uppercase font-bold text-slate-400">Issuance Fee</p>
+                        <p className="text-xs font-bold text-slate-800">
+                          {doc.fee > 0 ? formatCurrency(doc.fee) : 'FREE / Exempt'}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Requirements List */}
+                    <div className="mt-4">
+                      <p className="text-xs font-bold text-slate-700 mb-2">Required Attachments / Guidelines:</p>
+                      <ul className="space-y-1">
+                        {doc.requirements?.map((req, idx) => (
+                          <li key={idx} className="flex items-center text-xs text-slate-600">
+                            <CheckCircle className="w-3.5 h-3.5 text-emerald-500 mr-2 shrink-0" />
+                            <span>{req}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+
+                  {/* Card Actions */}
+                  <div className="pt-4 border-t border-slate-100 flex items-center justify-end space-x-2">
+                    <button
+                      onClick={() => openEditModal(doc)}
+                      className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center space-x-1.5 transition-colors cursor-pointer"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                      <span>Edit Info</span>
+                    </button>
+                    {onDeleteDocType && (
+                      <button
+                        onClick={() => openDeleteModal(doc)}
+                        className="px-3 py-1.5 text-xs font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg flex items-center space-x-1.5 transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Remove</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))
             )}
+          </div>
 
-            <div className="p-3.5 rounded-xl border bg-slate-950/80 border-slate-800 space-y-2">
-              <label className={`block font-bold text-xs flex items-center ${isDarkMode ? 'text-rose-300' : 'text-rose-700'}`}>
-                <Lock className="w-3.5 h-3.5 mr-1" /> Logged-in Account Password (Required to Delete)
-              </label>
-              <div className="relative">
-                <input
-                  type={showDeletePassword ? 'text' : 'password'}
-                  required
-                  autoFocus
-                  value={deletePasswordInput}
-                  onChange={(e) => {
-                    setDeletePasswordInput(e.target.value);
-                    setDeleteAuthError('');
-                  }}
-                  placeholder="Enter your logged-in account password"
-                  className={`w-full pl-3 pr-10 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 font-mono text-xs ${
-                    isDarkMode ? 'bg-slate-950 border-slate-800 text-white' : 'bg-white border-slate-300 text-slate-900'
-                  }`}
-                />
+          {/* Security Verification - Save/Create Document Info Modal */}
+          <Modal
+            isOpen={isSaveSecurityModalOpen}
+            onClose={() => {
+              setIsSaveSecurityModalOpen(false);
+              setSavePasswordInput('');
+              setSaveAuthError('');
+              setIsModalOpen(true);
+            }}
+            title={`Security Verification - ${editingDoc ? 'Update' : 'Add'} Document Information`}
+            darkMode={isDarkMode}
+          >
+            <div className="space-y-4 text-xs">
+              <div className="p-4 bg-blue-950/60 border border-blue-800/80 rounded-xl text-blue-200 flex items-start space-x-3">
+                <AlertTriangle className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold text-sm text-blue-100">{editingDoc ? 'Authorize Document Info Update' : 'Authorize New Document Type'}</p>
+                  <p className="text-xs text-blue-300 mt-1">
+                    Please confirm your logged-in account password to authorize {editingDoc ? 'updating' : 'adding'} document guidelines for{' '}
+                    <strong className="text-white">{formData.title || 'Document Type'}</strong> (
+                    <span className="font-mono text-blue-200">{formData.code || 'CODE'}</span>).
+                  </p>
+                </div>
+              </div>
+
+              {saveAuthError && (
+                <div className="p-3 bg-red-950/80 border border-red-800 text-red-200 rounded-xl flex items-center space-x-2 font-medium">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+                  <span>{saveAuthError}</span>
+                </div>
+              )}
+
+              <div className="p-3.5 rounded-xl border bg-slate-950/80 border-slate-800 space-y-2">
+                <label className={`block font-bold text-xs flex items-center ${isDarkMode ? 'text-blue-300' : 'text-blue-700'}`}>
+                  <Lock className="w-3.5 h-3.5 mr-1" /> Logged-in Account Password (Required to Authorize)
+                </label>
+                <div className="relative">
+                  <input
+                    type={showSavePassword ? 'text' : 'password'}
+                    required
+                    autoFocus
+                    value={savePasswordInput}
+                    onChange={(e) => {
+                      setSavePasswordInput(e.target.value);
+                      setSaveAuthError('');
+                    }}
+                    placeholder="Enter your logged-in account password"
+                    className={`w-full pl-3 pr-10 py-2 border rounded-xl focus:ring-2 focus:ring-blue-500 font-mono text-xs ${
+                      isDarkMode ? 'bg-slate-950 border-slate-800 text-white' : 'bg-white border-slate-300 text-slate-900'
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSavePassword(!showSavePassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                  >
+                    {showSavePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end space-x-3">
                 <button
                   type="button"
-                  onClick={() => setShowDeletePassword(!showDeletePassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                  disabled={isSaving}
+                  onClick={() => {
+                    setIsSaveSecurityModalOpen(false);
+                    setSavePasswordInput('');
+                    setSaveAuthError('');
+                    setIsModalOpen(true);
+                  }}
+                  className={`px-4 py-2 font-medium rounded-lg cursor-pointer ${
+                    isDarkMode ? 'text-slate-400 hover:text-white hover:bg-slate-800' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
                 >
-                  {showDeletePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isSaving || !savePasswordInput.trim()}
+                  onClick={handleSaveExecute}
+                  className="px-4 py-2 font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg shadow-md shadow-blue-900/20 disabled:opacity-50 flex items-center space-x-2 cursor-pointer"
+                >
+                  {isSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>Authorize & Save</span>
                 </button>
               </div>
             </div>
+          </Modal>
 
-            <div className="pt-3 border-t border-slate-800 flex items-center justify-end space-x-3">
-              <button
-                type="button"
-                disabled={isDeleting}
-                onClick={() => {
-                  setIsDeleteModalOpen(false);
-                  setDeletePasswordInput('');
-                  setDeleteAuthError('');
-                }}
-                className={`px-4 py-2 font-medium rounded-lg cursor-pointer ${
-                  isDarkMode ? 'text-slate-400 hover:text-white hover:bg-slate-800' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isDeleting || !deletePasswordInput.trim()}
-                onClick={handleDeleteExecute}
-                className="px-4 py-2 font-semibold text-white bg-rose-600 hover:bg-rose-500 rounded-lg shadow-md shadow-rose-900/20 disabled:opacity-50 flex items-center space-x-2 cursor-pointer"
-              >
-                {isDeleting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                <span>Authorize & Delete</span>
-              </button>
-            </div>
-          </div>
-        )}
-      </Modal>
+          {/* Security Delete Modal */}
+          <Modal
+            isOpen={isDeleteModalOpen}
+            onClose={() => {
+              setIsDeleteModalOpen(false);
+              setDeletePasswordInput('');
+              setDeleteAuthError('');
+            }}
+            title="Security Verification - Delete Document Information"
+            darkMode={isDarkMode}
+          >
+            {deletingDoc && (
+              <div className="space-y-4 text-xs">
+                <div className="p-4 bg-rose-950/60 border border-rose-800/80 rounded-xl text-rose-200 flex items-start space-x-3">
+                  <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold text-sm text-rose-100">Permanent Deletion</p>
+                    <p className="text-xs text-rose-300 mt-1">
+                      Are you sure you want to permanently delete the document information for{' '}
+                      <strong className="text-white">{deletingDoc.title}</strong> (
+                      <span className="font-mono text-rose-200">{deletingDoc.code}</span>)?
+                    </p>
+                  </div>
+                </div>
 
-      {/* CRUD Modal */}
-      <Modal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        title={editingDoc ? 'Edit Document Template' : 'Add Document Template'}
-      >
-        <form onSubmit={handleFormSubmit} className="space-y-4 text-xs">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block font-bold text-slate-700 mb-1">Code</label>
-              <input
-                type="text"
-                required
-                value={formData.code}
-                onChange={(e) => setFormData({ ...formData, code: e.target.value })}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono uppercase"
-              />
-            </div>
-            <div>
-              <label className="block font-bold text-slate-700 mb-1">Fee (PHP)</label>
-              <input
-                type="number"
-                min="0"
-                required
-                value={formData.fee}
-                onChange={(e) => setFormData({ ...formData, fee: e.target.value })}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-              />
-            </div>
-          </div>
+                {deleteAuthError && (
+                  <div className="p-3 bg-red-950/80 border border-red-800 text-red-200 rounded-xl flex items-center space-x-2 font-medium">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+                    <span>{deleteAuthError}</span>
+                  </div>
+                )}
 
-          <div>
-            <label className="block font-bold text-slate-700 mb-1">Title</label>
-            <input
-              type="text"
-              required
-              value={formData.title}
-              onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-            />
-          </div>
+                <div className="p-3.5 rounded-xl border bg-slate-950/80 border-slate-800 space-y-2">
+                  <label className={`block font-bold text-xs flex items-center ${isDarkMode ? 'text-rose-300' : 'text-rose-700'}`}>
+                    <Lock className="w-3.5 h-3.5 mr-1" /> Logged-in Account Password (Required to Delete)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showDeletePassword ? 'text' : 'password'}
+                      required
+                      autoFocus
+                      value={deletePasswordInput}
+                      onChange={(e) => {
+                        setDeletePasswordInput(e.target.value);
+                        setDeleteAuthError('');
+                      }}
+                      placeholder="Enter your logged-in account password"
+                      className={`w-full pl-3 pr-10 py-2 border rounded-xl focus:ring-2 focus:ring-rose-500 font-mono text-xs ${
+                        isDarkMode ? 'bg-slate-950 border-slate-800 text-white' : 'bg-white border-slate-300 text-slate-900'
+                      }`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowDeletePassword(!showDeletePassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                    >
+                      {showDeletePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
 
-          <div>
-            <label className="block font-bold text-slate-700 mb-1">Description</label>
-            <textarea
-              rows={2}
-              required
-              value={formData.description}
-              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-            />
-          </div>
+                <div className="pt-3 border-t border-slate-800 flex items-center justify-end space-x-3">
+                  <button
+                    type="button"
+                    disabled={isDeleting}
+                    onClick={() => {
+                      setIsDeleteModalOpen(false);
+                      setDeletePasswordInput('');
+                      setDeleteAuthError('');
+                    }}
+                    className={`px-4 py-2 font-medium rounded-lg cursor-pointer ${
+                      isDarkMode ? 'text-slate-400 hover:text-white hover:bg-slate-800' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isDeleting || !deletePasswordInput.trim()}
+                    onClick={handleDeleteExecute}
+                    className="px-4 py-2 font-semibold text-white bg-rose-600 hover:bg-rose-500 rounded-lg shadow-md shadow-rose-900/20 disabled:opacity-50 flex items-center space-x-2 cursor-pointer"
+                  >
+                    {isDeleting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    <span>Authorize & Delete</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </Modal>
 
-          <div className="pt-4 border-t border-slate-100 flex items-center justify-end space-x-3">
-            <button
-              type="button"
-              onClick={() => setIsModalOpen(false)}
-              className="px-4 py-2 font-medium text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-4 py-2 font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm cursor-pointer flex items-center space-x-1.5"
-            >
-              <CheckCircle className="w-4 h-4" />
-              <span>Proceed to Security Authorization</span>
-            </button>
-          </div>
-        </form>
-      </Modal>
+          {/* CRUD Form Modal */}
+          <Modal
+            isOpen={isModalOpen}
+            onClose={() => setIsModalOpen(false)}
+            title={editingDoc ? 'Edit Document Information' : 'Add New Document Type'}
+          >
+            <form onSubmit={handleFormSubmit} className="space-y-4 text-xs">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Document Code</label>
+                  <input
+                    type="text"
+                    required
+                    value={formData.code}
+                    onChange={(e) => setFormData({ ...formData, code: e.target.value })}
+                    placeholder="e.g. BC-01"
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Processing Fee (PHP)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required
+                    value={formData.fee}
+                    onChange={(e) => setFormData({ ...formData, fee: e.target.value })}
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Document Title</label>
+                <input
+                  type="text"
+                  required
+                  value={formData.title}
+                  onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                  placeholder="e.g. Barangay Clearance"
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Description & Purpose Scope</label>
+                <textarea
+                  rows={2}
+                  required
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  placeholder="Describe document purpose and certificate eligibility"
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Status</label>
+                <select
+                  value={formData.is_active}
+                  onChange={(e) => setFormData({ ...formData, is_active: e.target.value === 'true' })}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="true font-semibold">Active Document Type</option>
+                  <option value="false">Inactive / Suspended</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Required Attachments (One per line)
+                </label>
+                <textarea
+                  rows={3}
+                  value={formData.requirementsStr}
+                  onChange={(e) => setFormData({ ...formData, requirementsStr: e.target.value })}
+                  placeholder="e.g. Valid Government Issued ID&#10;Proof of Address"
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-end space-x-3">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm cursor-pointer flex items-center space-x-1.5"
+                >
+                  <CheckCircle className="w-4 h-4" />
+                  <span>Proceed to Security Authorization</span>
+                </button>
+              </div>
+            </form>
+          </Modal>
+        </>
+      )}
     </div>
   );
 }
