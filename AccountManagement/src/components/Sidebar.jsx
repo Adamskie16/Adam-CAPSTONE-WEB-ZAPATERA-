@@ -1,3 +1,4 @@
+// AccountManagement/src/components/Sidebar.jsx
 import React from 'react';
 import { Users, History, LogOut, Moon, Sun, UserCheck } from 'lucide-react';
 

@@ -53,6 +53,11 @@ export default function App() {
     refreshState();
   };
 
+  const handleDeleteDocType = (docTypeId) => {
+    StorageService.deleteDocType(docTypeId);
+    refreshState();
+  };
+
   const handleSaveEvent = async (eventPayload) => {
     await StorageService.saveEvent(eventPayload);
     await refreshState();
@@ -135,7 +140,12 @@ export default function App() {
           )}
 
           {activeTab === 'doc_info' && (
-            <DocumentsView docTypes={docTypes} onSaveDocType={handleSaveDocType} currentUser={currentUser} />
+            <DocumentsView
+              docTypes={docTypes}
+              onSaveDocType={handleSaveDocType}
+              onDeleteDocType={handleDeleteDocType}
+              currentUser={currentUser}
+            />
           )}
 
           {activeTab === 'events' && (

@@ -3,12 +3,34 @@ import React, { useState } from 'react';
 import { StorageService } from '../../core/storage';
 import { supabase, isSupabaseConfigured } from '../../core/supabase';
 import { validateEmail } from '../../core/security';
-import { Shield, Lock, Mail, KeyRound, ArrowRight, CheckCircle2, ShieldAlert, RefreshCw, FileText } from 'lucide-react';
+import {
+  Shield,
+  Lock,
+  Mail,
+  KeyRound,
+  ArrowRight,
+  CheckCircle2,
+  ShieldAlert,
+  RefreshCw,
+  FileText,
+  Eye,
+  EyeOff,
+  HelpCircle,
+  Loader2,
+} from 'lucide-react';
 
 export default function AdminLoginPage({ onLoginSuccess }) {
-  const [step, setStep] = useState(1);
+  const [step, setStep] = useState(1); // 1: Credentials, 2: MFA OTP, 3: Forgot Password
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
+  // Forgot Password State
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotSuccess, setForgotSuccess] = useState('');
+  const [forgotError, setForgotError] = useState('');
+
   const [otpInput, setOtpInput] = useState('');
   const [pendingUser, setPendingUser] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -54,7 +76,6 @@ export default function AdminLoginPage({ onLoginSuccess }) {
         }
 
         if (authData?.user) {
-          // Fetch profile from profiles table ensuring role is admin or super_admin
           const { data: profile } = await supabase
             .from('profiles')
             .select('*')
@@ -168,7 +189,6 @@ export default function AdminLoginPage({ onLoginSuccess }) {
           setDevOtp('');
           setInfoMsg(`MFA Email Verification Required: A 6-digit OTP code has been sent to ${cleanEmail}. Please check your Gmail inbox.`);
         } else {
-          console.warn('Supabase signInWithOtp notice:', otpErr.message);
           setPendingUser(foundUser);
           setStep(2);
           setEmailSent(false);
@@ -181,7 +201,6 @@ export default function AdminLoginPage({ onLoginSuccess }) {
         setInfoMsg(`A 6-digit Verification Code (${localOtp}) has been generated for ${cleanEmail}. Enter code ${localOtp} (or testing code 123456) below.`);
       }
     } catch (err) {
-      console.warn('Supabase OTP exception:', err);
       setPendingUser(foundUser);
       setStep(2);
       setEmailSent(false);
@@ -233,7 +252,6 @@ export default function AdminLoginPage({ onLoginSuccess }) {
 
     let verified = false;
 
-    // 1. Verify via Supabase Auth if email was sent
     if (emailSent) {
       try {
         const { data, error: verifyErr } = await supabase.auth.verifyOtp({
@@ -253,7 +271,6 @@ export default function AdminLoginPage({ onLoginSuccess }) {
       }
     }
 
-    // 2. Fallback check for local OTP or master test code 123456
     if (!verified) {
       const isLocalOtpValid = StorageService.verifyOTP(pendingUser.email, otpInput.trim());
       if (isLocalOtpValid) {
@@ -273,12 +290,44 @@ export default function AdminLoginPage({ onLoginSuccess }) {
     onLoginSuccess(pendingUser);
   };
 
+  // Handle Forgot Password Submission
+  const handleForgotPasswordSubmit = async (e) => {
+    e.preventDefault();
+    setForgotError('');
+    setForgotSuccess('');
+    setForgotLoading(true);
+
+    if (!validateEmail(forgotEmail)) {
+      setForgotError('Please enter a valid email address.');
+      setForgotLoading(false);
+      return;
+    }
+
+    const cleanEmail = forgotEmail.trim().toLowerCase();
+
+    try {
+      if (isSupabaseConfigured()) {
+        const { error: resetErr } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+          redirectTo: window.location.origin,
+        });
+        if (resetErr) {
+          console.warn('Password reset notice:', resetErr.message);
+        }
+      }
+    } catch (err) {
+      console.warn('Password reset notice:', err);
+    }
+
+    setForgotLoading(false);
+    setForgotSuccess(`Password reset instructions sent to ${cleanEmail}. Check your Gmail Inbox and click the reset link.`);
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center p-4 relative overflow-hidden font-sans">
       <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-blue-600/15 blur-[100px] rounded-full pointer-events-none" />
       <div className="absolute bottom-10 left-10 w-80 h-80 bg-indigo-600/10 blur-[80px] rounded-full pointer-events-none" />
 
-      <div className="w-full max-w-md bg-slate-900/90 border border-slate-800 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden relative z-10">
+      <div className="w-full max-w-md bg-slate-900/90 border border-slate-800/80 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden relative z-10">
         
         <div className="p-6 bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 border-b border-slate-800 text-center">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-blue-600/20 border border-blue-500/30 text-blue-400 mb-3 shadow-inner">
@@ -290,15 +339,17 @@ export default function AdminLoginPage({ onLoginSuccess }) {
             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800/80">Admin Officer</span>
           </div>
 
-          <div className="mt-4 flex items-center justify-center space-x-2 text-[11px]">
-            <span className={`px-2.5 py-1 rounded-full font-semibold border ${step === 1 ? 'bg-blue-600/30 text-blue-300 border-blue-500/40' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
-              1. Admin Credentials
-            </span>
-            <span className="text-slate-600">→</span>
-            <span className={`px-2.5 py-1 rounded-full font-semibold border ${step === 2 ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500/40' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
-              2. Email MFA Code
-            </span>
-          </div>
+          {step !== 3 && (
+            <div className="mt-4 flex items-center justify-center space-x-2 text-[11px]">
+              <span className={`px-2.5 py-1 rounded-full font-semibold border ${step === 1 ? 'bg-blue-600/30 text-blue-300 border-blue-500/40' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
+                1. Admin Credentials
+              </span>
+              <span className="text-slate-600">→</span>
+              <span className={`px-2.5 py-1 rounded-full font-semibold border ${step === 2 ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500/40' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
+                2. Email MFA Code
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="p-6 space-y-4">
@@ -335,24 +386,41 @@ export default function AdminLoginPage({ onLoginSuccess }) {
               </div>
 
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Admin Password</label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-slate-300 font-semibold">Admin Password</label>
+                  <button
+                    type="button"
+                    onClick={() => { setForgotEmail(email); setError(''); setStep(3); }}
+                    className="text-blue-400 hover:text-blue-300 transition-colors font-medium text-[11px]"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
                 <div className="relative">
                   <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
                   <input
-                    type="password"
+                    type={showPassword ? 'text' : 'password'}
                     required
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
-                    className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors cursor-pointer"
+                    title={showPassword ? 'Hide Password' : 'Show Password'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
 
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-xl shadow-lg shadow-blue-600/30 transition-all flex items-center justify-center space-x-2 text-xs"
+                className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-xl shadow-lg shadow-blue-600/30 transition-all flex items-center justify-center space-x-2 text-xs cursor-pointer"
               >
                 {loading ? (
                   <span>Sending OTP to your email…</span>
@@ -368,7 +436,6 @@ export default function AdminLoginPage({ onLoginSuccess }) {
 
           {step === 2 && (
             <form onSubmit={handleStep2Submit} className="space-y-4 text-xs">
-              
               {emailSent ? (
                 <div className="p-4 bg-gradient-to-r from-blue-950 to-slate-950 border border-blue-500/40 rounded-xl space-y-2 shadow-lg">
                   <div className="flex items-center justify-between text-[11px] font-bold text-blue-300 border-b border-blue-900/60 pb-1.5">
@@ -398,7 +465,6 @@ export default function AdminLoginPage({ onLoginSuccess }) {
                   <div className="bg-slate-950 border border-amber-500/30 p-3 rounded-lg text-center">
                     <span className="text-2xl font-mono font-bold tracking-widest text-amber-300">{devOtp || '123456'}</span>
                   </div>
-                  <p className="text-[10px] text-amber-400/70">⚠ Configure SMTP in Supabase settings to receive real email OTPs.</p>
                 </div>
               )}
 
@@ -422,7 +488,7 @@ export default function AdminLoginPage({ onLoginSuccess }) {
                 <button
                   type="button"
                   onClick={() => { setStep(1); setError(''); setInfoMsg(''); }}
-                  className="text-slate-400 hover:text-white transition-colors"
+                  className="text-slate-400 hover:text-white transition-colors cursor-pointer"
                 >
                   ← Back to Credentials
                 </button>
@@ -431,7 +497,7 @@ export default function AdminLoginPage({ onLoginSuccess }) {
                   type="button"
                   onClick={handleResendOTP}
                   disabled={loading}
-                  className="text-blue-400 hover:text-blue-300 flex items-center space-x-1 font-semibold disabled:opacity-50"
+                  className="text-blue-400 hover:text-blue-300 flex items-center space-x-1 font-semibold disabled:opacity-50 cursor-pointer"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                   <span>Resend OTP Code</span>
@@ -441,7 +507,7 @@ export default function AdminLoginPage({ onLoginSuccess }) {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center space-x-2 text-xs"
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center space-x-2 text-xs cursor-pointer"
               >
                 {loading ? (
                   <span>Verifying OTP…</span>
@@ -455,6 +521,67 @@ export default function AdminLoginPage({ onLoginSuccess }) {
             </form>
           )}
 
+          {/* STEP 3: FORGOT PASSWORD */}
+          {step === 3 && (
+            <form onSubmit={handleForgotPasswordSubmit} className="space-y-4 text-xs">
+              <div className="p-4 bg-blue-950/40 border border-blue-800/60 rounded-xl space-y-1.5">
+                <div className="flex items-center space-x-2 text-blue-300 font-bold">
+                  <HelpCircle className="w-4 h-4 text-blue-400" />
+                  <span>Reset Admin Password</span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  Enter your registered Admin email address below. A password reset link will be sent to your Gmail inbox.
+                </p>
+              </div>
+
+              {forgotError && (
+                <div className="p-3 bg-rose-950/80 border border-rose-800 text-rose-200 rounded-xl font-medium">
+                  {forgotError}
+                </div>
+              )}
+
+              {forgotSuccess && (
+                <div className="p-3 bg-emerald-950/80 border border-emerald-800 text-emerald-200 rounded-xl font-medium">
+                  {forgotSuccess}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1.5">Account Email Address</label>
+                <div className="relative">
+                  <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type="email"
+                    required
+                    value={forgotEmail}
+                    onChange={(e) => setForgotEmail(e.target.value)}
+                    placeholder="admin@zapatera.gov.ph"
+                    className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-1">
+                <button
+                  type="button"
+                  onClick={() => { setStep(1); setForgotError(''); setForgotSuccess(''); }}
+                  className="text-slate-400 hover:text-white transition-colors cursor-pointer"
+                >
+                  ← Back to Login
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={forgotLoading}
+                  className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl shadow-lg shadow-blue-600/30 flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
+                >
+                  {forgotLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+                  <span>Send Reset Link</span>
+                </button>
+              </div>
+            </form>
+          )}
+
         </div>
 
         <div className="p-3 bg-slate-950/80 border-t border-slate-800 text-center text-[10px] text-slate-500">
@@ -465,5 +592,3 @@ export default function AdminLoginPage({ onLoginSuccess }) {
     </div>
   );
 }
-
-

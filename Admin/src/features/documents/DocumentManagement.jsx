@@ -1,4 +1,4 @@
-// SuperAdmin/src/features/documents/DocumentManagement.jsx
+// Admin/src/features/documents/DocumentManagement.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import { FileText, Printer, ShieldCheck, User, Search, Check, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -123,7 +123,7 @@ export default function DocumentManagement({ docTypes = [] }) {
           <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Available Document Types</h3>
           {docTypes.length === 0 ? (
             <div className="bg-white p-6 rounded-2xl border border-slate-200 text-center text-slate-400 text-xs">
-              No document types found. Switch to "Template Configurations & SLA" tab to add one.
+              No document types found. Switch to "Document Information Management" tab to add one.
             </div>
           ) : (
             docTypes.map((doc) => (
@@ -147,7 +147,7 @@ export default function DocumentManagement({ docTypes = [] }) {
                     <FileText size={18} />
                   </div>
                   <div>
-                    <span className="font-mono text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 mr-2">
+                    <span className="font-mono text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200 mr-2">
                       {doc.code}
                     </span>
                     <span
@@ -334,7 +334,7 @@ export default function DocumentManagement({ docTypes = [] }) {
             </div>
           ) : (
             <div className="bg-white rounded-3xl p-12 text-center text-slate-400 border border-slate-100">
-              No document type selected. Add document types in Template Configurations.
+              No document type selected. Add document types in Document Information Management tab.
             </div>
           )}
         </div>
