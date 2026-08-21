@@ -1,7 +1,7 @@
 // AccountManagement/src/features/auth/LoginPage.jsx
 import React, { useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../../core/supabase';
-import { validateEmail } from '../../core/security';
+import { validateEmail, checkRateLimit, recordFailedAttempt, resetFailedAttempts } from '../../core/security';
 import {
   ShieldCheck,
   Lock,
@@ -51,6 +51,34 @@ export default function LoginPage({ onLoginSuccess }) {
     }
 
     const cleanEmail = email.trim().toLowerCase();
+
+    // 0. Server-Side Rate Limiting Check
+    const rateLimit = await checkRateLimit(cleanEmail);
+    if (!rateLimit.allowed) {
+      setError(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
+      setLoading(false);
+      return;
+    }
+
+    // 0.1 Check if Account is Already Locked in Database
+    try {
+      if (isSupabaseConfigured()) {
+        const { data: lockProfile } = await supabase
+          .from('profiles')
+          .select('is_locked, failed_attempts')
+          .eq('email', cleanEmail)
+          .maybeSingle();
+
+        if (lockProfile && (lockProfile.is_locked || (lockProfile.failed_attempts || 0) >= 3)) {
+          setError('Your account has been temporarily locked. Please contact an administrator to request access.');
+          setLoading(false);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('Pre-auth lock check notice:', err);
+    }
+
     let authenticatedUser = null;
     let authError = null;
 
@@ -80,6 +108,9 @@ export default function LoginPage({ onLoginSuccess }) {
             id_number: userMeta.id_number || '',
             is_active: true,
           };
+
+          // Successful Login -> Reset Failed Attempts Counter
+          await resetFailedAttempts(cleanEmail);
         }
       }
     } catch (err) {
@@ -96,20 +127,25 @@ export default function LoginPage({ onLoginSuccess }) {
           .maybeSingle();
 
         if (data && !dbErr) {
-          if (data.password && data.password !== password) {
-            setError('Invalid password credential.');
-            setLoading(false);
-            return;
+          if (data.password && data.password === password) {
+            authenticatedUser = data;
+            // Successful Login -> Reset Failed Attempts Counter
+            await resetFailedAttempts(cleanEmail);
           }
-          authenticatedUser = data;
         }
       } catch (err) {
         console.warn('super_admins fetch notice:', err);
       }
     }
 
+    // 3. Handle Failed Login Attempt if user wasn't authenticated
     if (!authenticatedUser) {
-      setError(authError || 'Invalid email or password credentials. Account not found.');
+      const lockRes = await recordFailedAttempt(cleanEmail, 'super_admin');
+      if (lockRes.isLockedOut || lockRes.attempts >= 3) {
+        setError('Your account has been locked due to multiple failed login attempts. Please contact an administrator to request an unlock.');
+      } else {
+        setError('Invalid login credentials. Please check your email and password.');
+      }
       setLoading(false);
       return;
     }

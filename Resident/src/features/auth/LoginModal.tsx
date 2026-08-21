@@ -15,7 +15,7 @@ import {
   HelpCircle,
   Loader2,
 } from 'lucide-react';
-import { validateEmail } from '../../core/security';
+import { validateEmail, checkRateLimit, recordFailedAttempt, resetFailedAttempts } from '../../core/security';
 import { supabase, isSupabaseConfigured } from '../../core/supabase';
 import { ResidentUser } from '../../types';
 
@@ -57,14 +57,24 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
       return;
     }
 
-    let foundUser: ResidentUser | null = null;
+    const cleanEmail = email.trim().toLowerCase();
 
+    // 0. Server-Side Rate Limiting Check
+    const rateLimit = await checkRateLimit(cleanEmail);
+    if (!rateLimit.allowed) {
+      setError(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
+      setLoading(false);
+      return;
+    }
+
+    // 0.1 Check if Account is Already Locked
+    let foundUser: ResidentUser | null = null;
     try {
       if (isSupabaseConfigured()) {
         const { data, error: dbErr } = await supabase
           .from('profiles')
           .select('*')
-          .eq('email', email.trim().toLowerCase())
+          .eq('email', cleanEmail)
           .maybeSingle();
 
         if (data && !dbErr) foundUser = data as ResidentUser;
@@ -73,28 +83,31 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
       console.warn('Supabase fetch notice:', err);
     }
 
-    if (!foundUser) {
-      setError('Invalid credentials. Account not found.');
+    if (foundUser && (foundUser.is_locked || (foundUser.failed_attempts || 0) >= 3)) {
+      setError('Your account has been temporarily locked. Please contact an administrator to request access.');
       setLoading(false);
       return;
     }
 
-    if (foundUser.is_locked || !foundUser.is_active || (foundUser.failed_attempts || 0) >= 3) {
-      setError('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Hall to unlock.');
+    // Check Password Validation if present
+    if (!foundUser || (foundUser.password && foundUser.password !== password)) {
+      const lockRes = await recordFailedAttempt(cleanEmail, 'resident');
+      if (lockRes.isLockedOut || lockRes.attempts >= 3) {
+        setError('Your account has been locked due to multiple failed login attempts. Please contact an administrator to request an unlock.');
+      } else {
+        setError('Invalid login credentials. Please check your email and password.');
+      }
       setLoading(false);
       return;
     }
 
-    if (foundUser.password && foundUser.password !== password) {
-      setError('Invalid password. Please check your credentials and try again.');
-      setLoading(false);
-      return;
-    }
+    // Password valid -> Reset failed attempts
+    await resetFailedAttempts(cleanEmail);
 
     try {
       if (isSupabaseConfigured()) {
         await supabase.auth.signInWithOtp({
-          email: email.trim().toLowerCase(),
+          email: cleanEmail,
         });
       }
     } catch (err) {

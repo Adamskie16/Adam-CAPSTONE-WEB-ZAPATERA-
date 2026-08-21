@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { StorageService } from '../../core/storage';
 import { supabase, isSupabaseConfigured } from '../../core/supabase';
-import { validateEmail } from '../../core/security';
+import { validateEmail, checkRateLimit, recordFailedAttempt, resetFailedAttempts } from '../../core/security';
 import {
   Shield,
   Lock,
@@ -54,6 +54,34 @@ export default function AdminLoginPage({ onLoginSuccess }) {
     }
 
     const cleanEmail = email.trim().toLowerCase();
+
+    // 0. Server-Side Rate Limiting Check
+    const rateLimit = await checkRateLimit(cleanEmail);
+    if (!rateLimit.allowed) {
+      setError(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
+      setLoading(false);
+      return;
+    }
+
+    // 0.1 Check if Account is Already Locked in Database
+    try {
+      if (isSupabaseConfigured()) {
+        const { data: lockProfile } = await supabase
+          .from('profiles')
+          .select('is_locked, failed_attempts')
+          .eq('email', cleanEmail)
+          .maybeSingle();
+
+        if (lockProfile && (lockProfile.is_locked || (lockProfile.failed_attempts || 0) >= 3)) {
+          setError('Your account has been temporarily locked. Please contact an administrator to request access.');
+          setLoading(false);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('Pre-auth lock check notice:', err);
+    }
+
     let foundUser = null;
     let authNoticeMessage = '';
 
@@ -102,13 +130,16 @@ export default function AdminLoginPage({ onLoginSuccess }) {
             failed_attempts: 0,
             is_locked: false,
           };
+
+          // Successful Login -> Reset Failed Attempts Counter
+          await resetFailedAttempts(cleanEmail);
         }
       }
     } catch (err) {
       console.warn('Supabase Auth signIn notice:', err);
     }
 
-    // 2. Query public.profiles table for admin or super_admin role
+    // 2. Query public.profiles table for admin or super_admin role if not auth yet
     if (!foundUser) {
       try {
         const { data, error: profileErr } = await supabase
@@ -120,18 +151,23 @@ export default function AdminLoginPage({ onLoginSuccess }) {
         if (data && !profileErr) {
           const pRole = (data.role || '').toLowerCase();
           if (pRole === 'admin' || pRole === 'super_admin' || pRole === 'superadmin') {
-            foundUser = {
-              id: data.id,
-              email: data.email,
-              full_name: data.full_name || cleanEmail.split('@')[0],
-              role: pRole === 'superadmin' ? 'super_admin' : pRole,
-              password: data.password,
-              phone: data.phone || '',
-              address: data.address || '',
-              is_active: data.is_active !== false,
-              failed_attempts: 0,
-              is_locked: false,
-            };
+            if (data.password && data.password === password) {
+              foundUser = {
+                id: data.id,
+                email: data.email,
+                full_name: data.full_name || cleanEmail.split('@')[0],
+                role: pRole === 'superadmin' ? 'super_admin' : pRole,
+                password: data.password,
+                phone: data.phone || '',
+                address: data.address || '',
+                is_active: data.is_active !== false,
+                failed_attempts: 0,
+                is_locked: false,
+              };
+
+              // Successful Login -> Reset Failed Attempts Counter
+              await resetFailedAttempts(cleanEmail);
+            }
           }
         }
       } catch (err) {
@@ -139,34 +175,13 @@ export default function AdminLoginPage({ onLoginSuccess }) {
       }
     }
 
-    // 3. Storage fallback if offline or not in Supabase profiles yet
+    // 3. Handle Failed Login Attempt if user wasn't authenticated
     if (!foundUser) {
-      const users = StorageService.getUsers();
-      foundUser = users.find((u) => u.email.toLowerCase() === cleanEmail && (u.role === 'admin' || u.role === 'super_admin')) || null;
-    }
-
-    if (!foundUser) {
-      setError(authNoticeMessage || 'Invalid email or password credentials. Account not found.');
-      setLoading(false);
-      return;
-    }
-
-    // 4. Check if account is locked out or inactive
-    if (foundUser.is_locked || !foundUser.is_active || (foundUser.failed_attempts || 0) >= 3) {
-      setError('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts recorded. Please contact Super Admin to unlock your account.');
-      setLoading(false);
-      return;
-    }
-
-    // 5. Verify Password if present on user record and not verified by Supabase Auth
-    if (foundUser.password && foundUser.password !== password) {
-      const updatedUser = StorageService.recordFailedAttempt(cleanEmail);
-      const failedCount = updatedUser ? updatedUser.failed_attempts : (attempts + 1);
-      setAttempts(failedCount);
-      if (failedCount >= 3 || (updatedUser && updatedUser.is_locked)) {
-        setError('ACCOUNT LOCKED OUT: You have exceeded 3 failed login attempts. Account has been locked.');
+      const lockRes = await recordFailedAttempt(cleanEmail, 'admin');
+      if (lockRes.isLockedOut || lockRes.attempts >= 3) {
+        setError('Your account has been locked due to multiple failed login attempts. Please contact an administrator to request an unlock.');
       } else {
-        setError(`Invalid password. Warning: Attempt ${failedCount} of 3 before account lockout!`);
+        setError('Invalid login credentials. Please check your email and password.');
       }
       setLoading(false);
       return;

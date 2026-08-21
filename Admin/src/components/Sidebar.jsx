@@ -11,6 +11,7 @@ import {
   History,
   LogOut,
   User,
+  Users,
 } from 'lucide-react';
 
 export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout }) {
@@ -22,6 +23,7 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
     { id: 'doc_info', label: 'Document Information', icon: FileText },
     { id: 'events', label: 'Barangay Events', icon: Calendar },
     { id: 'reports', label: 'Processing Reports', icon: BarChart2 },
+    { id: 'users', label: 'User Account Security', icon: Users },
     { id: 'logs', label: 'Activity Logs', icon: History },
     { id: 'account', label: 'My Account Profile', icon: User },
   ];
