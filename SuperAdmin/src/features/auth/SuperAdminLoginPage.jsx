@@ -87,10 +87,37 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
     }
   }, [email]);
 
+  const [showResendConfirmation, setShowResendConfirmation] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
+
+  const handleResendConfirmation = async () => {
+    if (!email) return;
+    setResendLoading(true);
+    setError('');
+    try {
+      if (isSupabaseConfigured()) {
+        const { error: resendErr } = await supabase.auth.resend({
+          type: 'signup',
+          email: email.trim().toLowerCase(),
+        });
+        if (resendErr) {
+          setError(resendErr.message || 'Failed to resend confirmation email.');
+        } else {
+          setInfoMsg(`A confirmation link has been resent to ${email.trim().toLowerCase()}. Please check your Gmail.`);
+        }
+      }
+    } catch (err) {
+      setError('Failed to resend confirmation email. Please try again.');
+    } finally {
+      setResendLoading(false);
+    }
+  };
+
   const handleStep1Submit = async (e) => {
     e.preventDefault();
     setError('');
     setInfoMsg('');
+    setShowResendConfirmation(false);
     setLoading(true);
 
     if (!validateEmail(email)) {
@@ -101,7 +128,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
 
     const cleanEmail = email.trim().toLowerCase();
 
-    // 0. Server-Side Rate Limiting Check
+    // 1. Rate Limiting Check
     const rateLimit = await checkRateLimit(cleanEmail);
     if (!rateLimit.allowed) {
       setError(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
@@ -109,7 +136,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
       return;
     }
 
-    // 0.1 Check if Account is Already Locked
+    // 2. Account Lockout Check
     const locked = await isAccountLocked(cleanEmail);
     if (locked) {
       setError('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact an administrator to unlock your account.');
@@ -117,9 +144,30 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
       return;
     }
 
-    let foundUser = null;
+    // 3. Check whether the Gmail / account exists
+    let profile = null;
+    try {
+      if (isSupabaseConfigured()) {
+        const { data, error: profErr } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('email', cleanEmail)
+          .maybeSingle();
 
-    // 1. First try Supabase Auth signInWithPassword (handles auth.users secure hashed credentials)
+        profile = data;
+      }
+    } catch (e) {
+      console.warn('Profiles check error:', e);
+    }
+
+    if (!profile) {
+      setError('This Gmail account is not registered. Please sign up first.');
+      setLoading(false);
+      return;
+    }
+
+    // 4. Verify Password with Official Supabase Auth Provider & Check Email Confirmation
+    let authUser = null;
     try {
       if (isSupabaseConfigured()) {
         const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
@@ -127,124 +175,78 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
           password: password,
         });
 
-        if (!authErr && authData?.user) {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('email', cleanEmail)
-            .maybeSingle();
-
-          foundUser = {
-            id: profile?.id || authData.user.id,
-            email: profile?.email || cleanEmail,
-            full_name: profile?.full_name || authData.user.user_metadata?.full_name || cleanEmail.split('@')[0],
-            role: 'super_admin',
-            phone: profile?.phone || '',
-            address: profile?.address || 'Barangay Zapatera, Cebu City',
-            is_active: true,
-            failed_attempts: 0,
-            is_locked: false,
-          };
-        }
-      }
-    } catch (e) {
-      console.warn('Supabase Auth check notice:', e);
-    }
-
-    // 2. If not authenticated via Supabase Auth, check public.profiles table
-    if (!foundUser) {
-      try {
-        if (isSupabaseConfigured()) {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('email', cleanEmail)
-            .maybeSingle();
-
-          if (profile) {
-            const pRole = (profile.role || '').toLowerCase();
-            if (pRole === 'super_admin' || pRole === 'superadmin' || pRole === 'admin') {
-              if (profile.password && profile.password === password) {
-                foundUser = {
-                  id: profile.id,
-                  email: profile.email,
-                  full_name: profile.full_name || cleanEmail.split('@')[0],
-                  role: 'super_admin',
-                  password: profile.password,
-                  phone: profile.phone || '',
-                  address: profile.address || '',
-                  is_active: true,
-                  failed_attempts: 0,
-                  is_locked: false,
-                };
-              }
-            }
+        if (authErr) {
+          const errMsg = (authErr.message || '').toLowerCase();
+          if (errMsg.includes('email not confirmed') || errMsg.includes('confirm') || authErr.code === 'email_not_confirmed') {
+            setError('Your account has been created, but your Gmail has not been confirmed yet. Please check your email and click the confirmation link before logging in.');
+            setShowResendConfirmation(true);
+            setLoading(false);
+            return;
           }
+
+          const lockRes = await recordFailedAttempt(cleanEmail, 'super_admin');
+          if (lockRes.isLockedOut || lockRes.attempts >= 3) {
+            setError('ACCOUNT LOCKED OUT: You have exceeded 3 failed login attempts. Your account has been locked for security. Please contact an administrator to request an unlock.');
+          } else {
+            setError('Incorrect email or password.');
+          }
+          setLoading(false);
+          return;
         }
-      } catch (e) {}
-    }
 
-    // 3. Check local seed admins if not found in profiles
-    if (!foundUser) {
-      const localAdmins = StorageService.getSuperAdmins ? StorageService.getSuperAdmins() : (StorageService.getAdmins ? StorageService.getAdmins() : []);
-      const localMatch = localAdmins.find(
-        (a) => a.email?.toLowerCase() === cleanEmail && a.password === password
-      );
-      if (localMatch) {
-        foundUser = { ...localMatch, role: 'super_admin', is_active: true };
+        authUser = authData?.user;
       }
-    }
-
-    // 3. Handle Failed Login Attempt if user wasn't authenticated
-    if (!foundUser) {
-      const lockRes = await recordFailedAttempt(cleanEmail, 'super_admin');
-      if (lockRes.isLockedOut || lockRes.attempts >= 3) {
-        setError('ACCOUNT LOCKED OUT: You have exceeded 3 failed login attempts. Your account has been locked for security. Please contact an administrator to request an unlock.');
-      } else {
-        setError(`Invalid credentials. Warning: Failed attempt ${lockRes.attempts} of 3 before account lockout!`);
-      }
+    } catch (err) {
+      setError('Authentication server error. Please try again.');
       setLoading(false);
       return;
     }
 
-    // Successful Login -> Reset Failed Attempts Counter
-    await resetFailedAttempts(cleanEmail);
+    // 5. Verify Role Authorization
+    const pRole = (profile.role || '').toLowerCase();
+    if (pRole !== 'super_admin' && pRole !== 'superadmin') {
+      setError('Access denied: You do not have Super Administrator privileges.');
+      setLoading(false);
+      return;
+    }
 
-    // 5. Generate local OTP fallback + try Supabase OTP email
-    const localOtp = StorageService.generateOTP(cleanEmail);
-    setDevOtp(localOtp);
+    // 6. Proceed to OTP verification -> Send 6-Digit Code to Gmail
+    await resetFailedAttempts(cleanEmail);
 
     try {
       if (isSupabaseConfigured()) {
         const { error: otpErr } = await supabase.auth.signInWithOtp({
           email: cleanEmail,
+          options: { shouldCreateUser: false },
         });
 
-        if (!otpErr) {
-          setPendingUser(foundUser);
-          setStep(2);
-          setEmailSent(true);
-          setDevOtp('');
-          setInfoMsg(`MFA Required: A 6-digit verification code has been dispatched to ${cleanEmail}. Please check your Gmail inbox.`);
-        } else {
-          setPendingUser(foundUser);
-          setStep(2);
-          setEmailSent(false);
-          setInfoMsg(`A 6-digit Verification Code (${localOtp}) has been generated for ${cleanEmail}. Enter code ${localOtp} (or testing code 123456) below.`);
+        if (otpErr) {
+          setError('Failed to dispatch verification code to Gmail. Please verify your connection.');
+          setLoading(false);
+          return;
         }
-      } else {
-        setPendingUser(foundUser);
-        setStep(2);
-        setEmailSent(false);
-        setInfoMsg(`A 6-digit Verification Code (${localOtp}) has been generated for ${cleanEmail}. Enter code ${localOtp} (or testing code 123456) below.`);
       }
-    } catch (e) {
-      setPendingUser(foundUser);
-      setStep(2);
-      setEmailSent(false);
-      setInfoMsg(`A 6-digit Verification Code (${localOtp}) has been generated for ${cleanEmail}. Enter code ${localOtp} (or testing code 123456) below.`);
+    } catch (err) {
+      setError('Failed to send OTP code to your email. Please try again.');
+      setLoading(false);
+      return;
     }
 
+    const pendingPayload = {
+      id: profile.id,
+      email: cleanEmail,
+      full_name: profile.full_name || authUser?.user_metadata?.full_name || cleanEmail.split('@')[0],
+      role: 'super_admin',
+      phone: profile.phone || '',
+      address: profile.address || 'Barangay Zapatera, Cebu City',
+      is_active: true,
+      is_locked: false,
+      failed_attempts: 0,
+    };
+
+    setPendingUser(pendingPayload);
+    setStep(2);
+    setInfoMsg(`Password verified! A 6-digit verification code has been dispatched to ${cleanEmail}. Please enter it below.`);
     setLoading(false);
   };
 
@@ -253,27 +255,24 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
     setLoading(true);
     setError('');
 
-    const localOtp = StorageService.generateOTP(pendingUser.email);
-    setDevOtp(localOtp);
-
     try {
-      const { error: otpErr } = await supabase.auth.signInWithOtp({
-        email: pendingUser.email,
-      });
-      if (otpErr) {
-        setEmailSent(false);
-        setInfoMsg(`Email delivery unavailable. Use the OTP code shown below.`);
-      } else {
-        setEmailSent(true);
-        setDevOtp('');
-        setInfoMsg(`A new OTP code has been re-sent to ${pendingUser.email}. Please check your inbox.`);
+      if (isSupabaseConfigured()) {
+        const { error: otpErr } = await supabase.auth.signInWithOtp({
+          email: pendingUser.email,
+          options: { shouldCreateUser: false },
+        });
+
+        if (otpErr) {
+          setError('Failed to resend OTP. Please try again.');
+        } else {
+          setInfoMsg(`A new 6-digit verification code has been re-sent to ${pendingUser.email}. Check your Gmail.`);
+        }
       }
     } catch (err) {
-      setEmailSent(false);
-      setInfoMsg(`Email service unreachable. Use the OTP code shown below.`);
+      setError('Failed to resend verification code.');
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   const handleStep2Submit = async (e) => {
@@ -289,42 +288,61 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
 
     let verified = false;
 
-    if (emailSent) {
-      try {
+    try {
+      if (isSupabaseConfigured()) {
         const { data, error: verifyErr } = await supabase.auth.verifyOtp({
           email: pendingUser.email.trim().toLowerCase(),
           token: otpInput.trim(),
           type: 'email',
         });
 
-        if (!verifyErr) {
+        if (!verifyErr && data?.user) {
           verified = true;
           if (data?.session) {
             await supabase.auth.setSession(data.session);
           }
         }
-      } catch (err) {
-        console.warn('Supabase verifyOtp notice:', err);
       }
+    } catch (err) {
+      console.warn('Supabase verifyOtp exception:', err);
     }
 
     if (!verified) {
-      const isLocalValid = StorageService.verifyOTP(pendingUser.email, otpInput.trim());
-      if (isLocalValid) {
-        verified = true;
-      }
-    }
-
-    if (!verified) {
-      setError('Invalid or expired OTP code. Please check your email inbox and try again.');
+      setError('Invalid or expired verification code. Please check your Gmail or request a new code.');
       setLoading(false);
       return;
     }
 
-    StorageService.resetFailedAttempts(pendingUser.email);
-    StorageService.setCurrentUser(pendingUser);
+    // Role-based redirection verification from trusted server data
+    let trustedRole = 'super_admin';
+    try {
+      if (isSupabaseConfigured()) {
+        const { data: serverProfile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('email', pendingUser.email)
+          .single();
+
+        if (serverProfile) {
+          trustedRole = (serverProfile.role || '').toLowerCase();
+        }
+      }
+    } catch (err) {}
+
+    if (trustedRole !== 'super_admin' && trustedRole !== 'superadmin') {
+      setError('Access denied: You do not have Super Administrator privileges.');
+      setLoading(false);
+      return;
+    }
+
+    const verifiedSuperAdmin = {
+      ...pendingUser,
+      role: 'super_admin',
+    };
+
+    StorageService.setCurrentUser(verifiedSuperAdmin);
     setLoading(false);
-    onLoginSuccess(pendingUser);
+    onLoginSuccess(verifiedSuperAdmin);
   };
 
   // Handle Forgot Password Reset Submission
@@ -458,9 +476,24 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
           
           {/* Alerts */}
           {error && (
-            <div className="p-3.5 bg-rose-950/80 border border-rose-800/80 text-rose-200 rounded-xl text-xs flex items-start space-x-2.5 shadow-sm">
-              <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-              <div className="flex-1 font-medium leading-relaxed">{error}</div>
+            <div className="p-3.5 bg-rose-950/80 border border-rose-800/80 text-rose-200 rounded-xl text-xs space-y-2 shadow-sm">
+              <div className="flex items-start space-x-2.5">
+                <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <div className="flex-1 font-medium leading-relaxed">{error}</div>
+              </div>
+              {showResendConfirmation && (
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={handleResendConfirmation}
+                    disabled={resendLoading}
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg text-[11px] flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer shadow"
+                  >
+                    {resendLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Mail className="w-3.5 h-3.5" />}
+                    <span>Resend Confirmation Email Link</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

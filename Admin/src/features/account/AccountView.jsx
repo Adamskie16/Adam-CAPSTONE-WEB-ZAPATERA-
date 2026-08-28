@@ -273,16 +273,20 @@ export default function AccountView({ currentUser, onUserUpdated, onLogout, isDa
     setUpdatingPassword(true);
 
     try {
-      const storedPassword = currentUser?.password || profile.password || 'admin123';
-      const fallbackPasswords = ['admin123', 'superadmin123', 'password123', 'admin', 'superadmin', '123456789'];
-      const isCurrentValid =
-        securityForm.currentPassword === storedPassword ||
-        fallbackPasswords.includes(securityForm.currentPassword);
+      const userEmail = (currentUser?.email || profile?.email || '').trim().toLowerCase();
+      
+      // Verify current password with Supabase Auth
+      if (isSupabaseConfigured() && userEmail) {
+        const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+          email: userEmail,
+          password: securityForm.currentPassword,
+        });
 
-      if (!isCurrentValid) {
-        setPasswordError('Current password authentication failed. Please re-enter correct password.');
-        setUpdatingPassword(false);
-        return;
+        if (authErr || !authData?.user) {
+          setPasswordError('Current password authentication failed. Please enter your correct password.');
+          setUpdatingPassword(false);
+          return;
+        }
       }
 
       // Update password in Supabase Auth if available

@@ -70,25 +70,19 @@ export default function DocumentsView({ docTypes = [], onSaveDocType, onDeleteDo
         'null'
       );
     const loggedInEmail = (session?.email || '').trim().toLowerCase();
-    const storedPassword = session?.password;
+    if (!loggedInEmail) return false;
 
-    if (storedPassword && inputPassword === storedPassword) return true;
-
-    try {
-      const localUsers = JSON.parse(localStorage.getItem('zapatera_residents_db') || '[]');
-      if (loggedInEmail) {
-        const matchedUser = localUsers.find(
-          (u) => u.email && u.email.trim().toLowerCase() === loggedInEmail
-        );
-        if (matchedUser && matchedUser.password && inputPassword === matchedUser.password) {
-          return true;
-        }
+    if (isSupabaseConfigured()) {
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: loggedInEmail,
+          password: inputPassword,
+        });
+        if (!error && data?.user) return true;
+      } catch (e) {
+        return false;
       }
-    } catch (e) {}
-
-    const fallbackPasswords = ['superadmin123', 'admin123', 'password123', 'admin', 'superadmin', '123456789'];
-    if (fallbackPasswords.includes(inputPassword)) return true;
-
+    }
     return false;
   }
 

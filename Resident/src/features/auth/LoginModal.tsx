@@ -79,10 +79,37 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
     }
   }, []);
 
+  const [showResendConfirmation, setShowResendConfirmation] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
+
+  const handleResendConfirmation = async () => {
+    if (!email) return;
+    setResendLoading(true);
+    setError('');
+    try {
+      if (isSupabaseConfigured()) {
+        const { error: resendErr } = await supabase.auth.resend({
+          type: 'signup',
+          email: email.trim().toLowerCase(),
+        });
+        if (resendErr) {
+          setError(resendErr.message || 'Failed to resend confirmation email.');
+        } else {
+          setInfoMsg(`A confirmation link has been resent to ${email.trim().toLowerCase()}. Please check your Gmail.`);
+        }
+      }
+    } catch (err) {
+      setError('Failed to resend confirmation email. Please try again.');
+    } finally {
+      setResendLoading(false);
+    }
+  };
+
   const handleStep1Submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setInfoMsg('');
+    setShowResendConfirmation(false);
     setLoading(true);
 
     if (!validateEmail(email)) {
@@ -93,7 +120,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
 
     const cleanEmail = email.trim().toLowerCase();
 
-    // 0. Server-Side Rate Limiting Check
+    // 1. Rate Limiting Check
     const rateLimit = await checkRateLimit(cleanEmail);
     if (!rateLimit.allowed) {
       setError(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
@@ -101,7 +128,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
       return;
     }
 
-    // 0.1 Check if Account is Already Locked
+    // 2. Account Lockout Check
     const locked = await isAccountLocked(cleanEmail);
     if (locked) {
       setError('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Zapatera administration to unlock your account.');
@@ -109,9 +136,30 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
       return;
     }
 
-    let foundUser: ResidentUser | null = null;
+    // 3. Check whether the Gmail / account exists
+    let profile: any = null;
+    try {
+      if (isSupabaseConfigured()) {
+        const { data, error: profErr } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('email', cleanEmail)
+          .maybeSingle();
 
-    // 1. Try Supabase Auth signInWithPassword (handles auth.users secure hashed credentials)
+        profile = data;
+      }
+    } catch (e) {
+      console.warn('Profiles check error:', e);
+    }
+
+    if (!profile) {
+      setError('This Gmail account is not registered. Please sign up first.');
+      setLoading(false);
+      return;
+    }
+
+    // 4. Verify Password with Official Supabase Auth Provider & Check Email Confirmation
+    let authUser: any = null;
     try {
       if (isSupabaseConfigured()) {
         const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
@@ -119,115 +167,80 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
           password: password,
         });
 
-        if (!authErr && authData?.user) {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('email', cleanEmail)
-            .maybeSingle();
+        if (authErr) {
+          const errMsg = (authErr.message || '').toLowerCase();
+          if (errMsg.includes('email not confirmed') || errMsg.includes('confirm') || authErr.code === 'email_not_confirmed') {
+            setError('Your account has been created, but your Gmail has not been confirmed yet. Please check your email and click the confirmation link before logging in.');
+            setShowResendConfirmation(true);
+            setLoading(false);
+            return;
+          }
 
-          foundUser = {
-            id: profile?.id || authData.user.id,
-            email: cleanEmail,
-            full_name: profile?.full_name || authData.user.user_metadata?.full_name || 'Resident User',
-            first_name: profile?.first_name || '',
-            last_name: profile?.last_name || '',
-            middle_initial: profile?.middle_initial || '',
-            role: 'resident',
-            password: password,
-            phone: profile?.phone || '',
-            address: profile?.address || 'Barangay Zapatera, Cebu City',
-            sitio: profile?.sitio || 'Sitio Zapatera Proper',
-            civil_status: profile?.civil_status || 'Single',
-            voter_status: profile?.voter_status || 'Registered Voter',
-            id_type: profile?.id_type || 'Barangay ID',
-            id_number: profile?.id_number || 'BZ-RES-001',
-            is_active: true,
-            is_locked: false,
-            failed_attempts: 0,
-            created_at: profile?.created_at || new Date().toISOString(),
-          };
+          const lockRes = await recordFailedAttempt(cleanEmail, 'resident');
+          if (lockRes.isLockedOut || lockRes.attempts >= 3) {
+            setError('ACCOUNT LOCKED OUT: You have exceeded 3 failed login attempts. Your account has been locked for security. Please contact Barangay Zapatera administration to request an unlock.');
+          } else {
+            setError('Incorrect email or password.');
+          }
+          setLoading(false);
+          return;
         }
+
+        authUser = authData?.user;
       }
     } catch (err) {
-      console.warn('Supabase auth notice:', err);
-    }
-
-    // 2. If not authenticated via Supabase Auth, check public.profiles table
-    if (!foundUser) {
-      try {
-        if (isSupabaseConfigured()) {
-          const { data: profData } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('email', cleanEmail)
-            .maybeSingle();
-
-          if (profData && (!profData.password || profData.password === password || password === 'password123')) {
-            foundUser = {
-              id: profData.id,
-              email: cleanEmail,
-              full_name: profData.full_name || 'Resident User',
-              first_name: profData.first_name || '',
-              last_name: profData.last_name || '',
-              middle_initial: profData.middle_initial || '',
-              role: 'resident',
-              password: password,
-              phone: profData.phone || '',
-              address: profData.address || 'Barangay Zapatera, Cebu City',
-              sitio: profData.sitio || 'Sitio Zapatera Proper',
-              civil_status: profData.civil_status || 'Single',
-              voter_status: profData.voter_status || 'Registered Voter',
-              id_type: profData.id_type || 'Barangay ID',
-              id_number: profData.id_number || 'BZ-RES-001',
-              is_active: true,
-              is_locked: false,
-              failed_attempts: 0,
-              created_at: profData.created_at || new Date().toISOString(),
-            };
-          }
-        }
-      } catch (err) {
-        console.warn('Profiles table fallback check:', err);
-      }
-    }
-
-    // 3. Fallback to passed users prop
-    if (!foundUser && users && users.length > 0) {
-      const match = users.find((u) => u.email.toLowerCase() === cleanEmail);
-      if (match && (!match.password || match.password === password || password === 'password123')) {
-        foundUser = match;
-      }
-    }
-
-    // 4. If credentials still not authenticated, record failed attempt
-    if (!foundUser) {
-      const lockRes = await recordFailedAttempt(cleanEmail, 'resident');
-      if (lockRes.isLockedOut || lockRes.attempts >= 3) {
-        setError('ACCOUNT LOCKED OUT: You have exceeded 3 failed login attempts. Your account has been locked for security. Please contact Barangay Zapatera administration to request an unlock.');
-      } else {
-        setError(`Invalid credentials. Warning: Failed attempt ${lockRes.attempts} of 3 before account lockout!`);
-      }
+      setError('Authentication server error. Please try again.');
       setLoading(false);
       return;
     }
 
-    // Password valid -> Reset failed attempts
+    // 5. Proceed to OTP verification -> Send 6-Digit Code to Gmail
     await resetFailedAttempts(cleanEmail);
 
     try {
       if (isSupabaseConfigured()) {
-        await supabase.auth.signInWithOtp({
+        const { error: otpErr } = await supabase.auth.signInWithOtp({
           email: cleanEmail,
+          options: { shouldCreateUser: false },
         });
+
+        if (otpErr) {
+          setError('Failed to dispatch verification code to Gmail. Please try again.');
+          setLoading(false);
+          return;
+        }
       }
     } catch (err) {
-      console.warn('Supabase OTP exception:', err);
+      setError('Failed to send OTP code to your Gmail.');
+      setLoading(false);
+      return;
     }
 
-    setPendingUser(foundUser);
+    const residentPayload: ResidentUser = {
+      id: profile.id,
+      email: cleanEmail,
+      full_name: profile.full_name || authUser?.user_metadata?.full_name || 'Resident User',
+      first_name: profile.first_name || '',
+      last_name: profile.last_name || '',
+      middle_initial: profile.middle_initial || '',
+      role: 'resident',
+      password: '',
+      phone: profile.phone || '',
+      address: profile.address || 'Barangay Zapatera, Cebu City',
+      sitio: profile.sitio || 'Sitio Zapatera Proper',
+      civil_status: profile.civil_status || 'Single',
+      voter_status: profile.voter_status || 'Registered Voter',
+      id_type: profile.id_type || 'Barangay ID',
+      id_number: profile.id_number || 'BZ-RES-001',
+      is_active: true,
+      is_locked: false,
+      failed_attempts: 0,
+      created_at: profile.created_at || new Date().toISOString(),
+    };
+
+    setPendingUser(residentPayload);
     setStep(2);
-    setInfoMsg(`A 6-digit verification code has been dispatched to your Gmail (${email}). Please open your Gmail Inbox or Spam folder and enter the 6-digit code below.`);
+    setInfoMsg(`Password verified! A 6-digit verification code has been dispatched to ${cleanEmail}. Please check your Gmail Inbox or Spam folder and enter it below.`);
     setLoading(false);
   };
 
@@ -238,16 +251,22 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
 
     try {
       if (isSupabaseConfigured()) {
-        await supabase.auth.signInWithOtp({
+        const { error: otpErr } = await supabase.auth.signInWithOtp({
           email: pendingUser.email.trim().toLowerCase(),
+          options: { shouldCreateUser: false },
         });
+
+        if (otpErr) {
+          setError('Failed to resend code. Please try again.');
+        } else {
+          setInfoMsg(`A fresh 6-digit verification code has been re-sent to ${pendingUser.email}. Please check your Gmail Inbox.`);
+        }
       }
     } catch (err) {
-      console.warn('Resend OTP exception:', err);
+      setError('Failed to resend verification code.');
+    } finally {
+      setLoading(false);
     }
-
-    setInfoMsg(`A fresh 6-digit verification code has been re-sent to ${pendingUser.email}. Please check your Gmail Inbox.`);
-    setLoading(false);
   };
 
   const handleStep2Submit = async (e: React.FormEvent) => {
@@ -273,7 +292,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
           type: 'email',
         });
 
-        if (!verifyErr) {
+        if (!verifyErr && data?.user) {
           verified = true;
           if (data?.session) {
             await supabase.auth.setSession(data.session);
@@ -285,14 +304,35 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
     }
 
     if (!verified) {
-      setError('Invalid or expired OTP code. Please check your email inbox and try again.');
+      setError('Invalid or expired verification code. Please check your Gmail or request a new code.');
       setLoading(false);
       return;
     }
 
-    localStorage.setItem('zapatera_resident_session', JSON.stringify(pendingUser));
+    // Role-based verification from server
+    let trustedRole = 'resident';
+    try {
+      if (isSupabaseConfigured()) {
+        const { data: serverProfile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('email', pendingUser.email)
+          .single();
+
+        if (serverProfile) {
+          trustedRole = (serverProfile.role || '').toLowerCase();
+        }
+      }
+    } catch (err) {}
+
+    const verifiedResident: ResidentUser = {
+      ...pendingUser,
+      role: 'resident',
+    };
+
+    localStorage.setItem('zapatera_resident_session', JSON.stringify(verifiedResident));
     setLoading(false);
-    onLoginSuccess(pendingUser);
+    onLoginSuccess(verifiedResident);
     onClose();
   };
 
@@ -392,9 +432,24 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
     <Modal isOpen={isOpen} onClose={onClose} title="Resident Account Sign In" maxWidth="max-w-md" darkMode={true}>
       <div className="space-y-4 text-xs font-sans text-slate-100">
         {error && (
-          <div className="p-3 bg-rose-950/80 text-rose-200 border border-rose-800 rounded-xl font-semibold flex items-start space-x-2">
-            <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-            <span>{error}</span>
+          <div className="p-3 bg-rose-950/80 text-rose-200 border border-rose-800 rounded-xl font-semibold space-y-2">
+            <div className="flex items-start space-x-2">
+              <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+            {showResendConfirmation && (
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={handleResendConfirmation}
+                  disabled={resendLoading}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg text-[11px] flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer shadow"
+                >
+                  {resendLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Mail className="w-3.5 h-3.5" />}
+                  <span>Resend Confirmation Email Link</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 

@@ -140,12 +140,20 @@ export default function UserManagementView({ currentUser }) {
       StorageService.getCurrentUser() ||
       JSON.parse(localStorage.getItem('zapatera_admin_session') || 'null');
 
-    const storedPassword = loggedInUser?.password;
-    if (storedPassword && inputPassword === storedPassword) return true;
+    const loggedInEmail = (loggedInUser?.email || '').trim().toLowerCase();
+    if (!loggedInEmail) return false;
 
-    const validPasswords = ['admin123', 'superadmin123', 'password123', 'admin', '123456789'];
-    if (validPasswords.includes(inputPassword)) return true;
-
+    if (isSupabaseConfigured()) {
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: loggedInEmail,
+          password: inputPassword,
+        });
+        if (!error && data?.user) return true;
+      } catch (e) {
+        return false;
+      }
+    }
     return false;
   }
 

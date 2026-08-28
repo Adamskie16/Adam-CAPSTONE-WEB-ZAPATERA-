@@ -37,7 +37,6 @@ const INITIAL_SUPER_ADMINS = [
   {
     id: 'sa-001',
     email: 'superadmin@zapatera.gov.ph',
-    password: 'password123',
     full_name: 'Hon. Executive Officer',
     first_name: 'Executive',
     last_name: 'Officer',

@@ -35,7 +35,6 @@ const INITIAL_ADMINS = [
   {
     id: 'adm-001',
     email: 'admin@zapatera.gov.ph',
-    password: 'password123',
     full_name: 'Maria Santos (Barangay Secretary)',
     first_name: 'Maria',
     last_name: 'Santos',

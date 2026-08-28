@@ -149,6 +149,32 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
     ? `${regData.last_name.trim() || '[Last Name]'}, ${regData.first_name.trim() || '[First Name]'} ${cleanMI ? cleanMI + '.' : ''}`
     : '';
 
+  const [showResendConfirmation, setShowResendConfirmation] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
+
+  const handleResendConfirmation = async () => {
+    if (!loginEmail) return;
+    setResendLoading(true);
+    setErrorMessage('');
+    try {
+      if (isSupabaseConfigured()) {
+        const { error: resendErr } = await supabase.auth.resend({
+          type: 'signup',
+          email: loginEmail.trim().toLowerCase(),
+        });
+        if (resendErr) {
+          setErrorMessage(resendErr.message || 'Failed to resend confirmation email.');
+        } else {
+          setSuccessBanner(`A confirmation link has been resent to ${loginEmail.trim().toLowerCase()}. Please check your Gmail.`);
+        }
+      }
+    } catch (err) {
+      setErrorMessage('Failed to resend confirmation email.');
+    } finally {
+      setResendLoading(false);
+    }
+  };
+
   // ==========================================
   // HANDLE RESIDENT LOGIN
   // ==========================================
@@ -156,6 +182,7 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
     setErrorMessage('');
     setSuccessBanner('');
     setInfoBanner('');
+    setShowResendConfirmation(false);
 
     if (!validateEmail(loginEmail)) {
       setErrorMessage('Please enter a valid Gmail / email address.');
@@ -169,7 +196,7 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
     setLoading(true);
     const cleanEmail = loginEmail.toLowerCase().trim();
 
-    // 0. CHECK RATE LIMIT
+    // 1. CHECK RATE LIMIT
     const rateLimit = await checkRateLimit(cleanEmail);
     if (!rateLimit.allowed) {
       setErrorMessage(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
@@ -177,7 +204,7 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
       return;
     }
 
-    // 1. CHECK IF ACCOUNT IS LOCKED (3 Failed Attempts)
+    // 2. CHECK IF ACCOUNT IS LOCKED (3 Failed Attempts)
     const locked = await isAccountLocked(cleanEmail);
     if (locked) {
       setErrorMessage('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Zapatera administration to unlock your account.');
@@ -185,10 +212,30 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
       return;
     }
 
-    let authenticatedUser: ResidentUser | null = null;
-    let authNotice = '';
+    // 3. CHECK WHETHER GMAIL / ACCOUNT EXISTS
+    let profData: any = null;
+    try {
+      if (isSupabaseConfigured()) {
+        const { data, error: profErr } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('email', cleanEmail)
+          .maybeSingle();
 
-    // 2. CHECK SUPABASE AUTH
+        profData = data;
+      }
+    } catch (e) {
+      console.warn('Profiles check exception:', e);
+    }
+
+    if (!profData) {
+      setErrorMessage('This Gmail account is not registered. Please sign up first.');
+      setLoading(false);
+      return;
+    }
+
+    // 4. VERIFY PASSWORD WITH OFFICIAL SUPABASE AUTH & CHECK EMAIL CONFIRMATION
+    let authUser: any = null;
     try {
       if (isSupabaseConfigured()) {
         const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
@@ -197,138 +244,85 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
         });
 
         if (authErr) {
-          authNotice = authErr.message;
+          const errMsg = (authErr.message || '').toLowerCase();
+          if (errMsg.includes('email not confirmed') || errMsg.includes('confirm') || authErr.code === 'email_not_confirmed') {
+            setErrorMessage('Your account has been created, but your Gmail has not been confirmed yet. Please check your email and click the confirmation link before logging in.');
+            setShowResendConfirmation(true);
+            setLoading(false);
+            return;
+          }
+
+          await recordFailedAttempt(cleanEmail);
+          const updatedLock = await isAccountLocked(cleanEmail);
+          if (updatedLock) {
+            setErrorMessage('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Zapatera administration.');
+          } else {
+            setErrorMessage('Incorrect email or password.');
+          }
+
+          setLoading(false);
+          return;
         }
 
-        if (authData?.user) {
-          const { data: profData } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('email', cleanEmail)
-            .maybeSingle();
-
-          authenticatedUser = {
-            id: authData.user.id,
-            email: cleanEmail,
-            full_name: profData?.full_name || authData.user.user_metadata?.full_name || 'Resident User',
-            first_name: profData?.first_name || authData.user.user_metadata?.first_name || '',
-            last_name: profData?.last_name || authData.user.user_metadata?.last_name || '',
-            middle_initial: profData?.middle_initial || authData.user.user_metadata?.middle_initial || '',
-            role: 'resident',
-            password: loginPassword,
-            phone: profData?.phone || '09171234567',
-            address: profData?.address || 'Barangay Zapatera, Cebu City',
-            sitio: profData?.sitio || 'Sitio Zapatera Proper',
-            civil_status: profData?.civil_status || 'Single',
-            voter_status: profData?.voter_status || 'Registered Voter',
-            id_type: profData?.id_type || 'Barangay ID',
-            id_number: profData?.id_number || 'BZ-RES-001',
-            is_active: profData?.is_active ?? true,
-            is_locked: profData?.is_locked ?? false,
-            failed_attempts: profData?.failed_attempts ?? 0,
-            created_at: profData?.created_at || new Date().toISOString(),
-          };
-        }
+        authUser = authData?.user;
       }
     } catch (err: any) {
-      console.warn('Supabase signInWithPassword exception:', err);
-    }
-
-    // 2.5 CHECK PROFILES TABLE FOR DIRECT PASSWORD MATCH
-    if (!authenticatedUser && isSupabaseConfigured()) {
-      try {
-        const { data: profData } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('email', cleanEmail)
-          .maybeSingle();
-
-        if (profData && profData.password && profData.password === loginPassword) {
-          authenticatedUser = {
-            id: profData.id,
-            email: cleanEmail,
-            full_name: profData.full_name || 'Resident User',
-            first_name: profData.first_name || '',
-            last_name: profData.last_name || '',
-            middle_initial: profData.middle_initial || '',
-            role: 'resident',
-            password: loginPassword,
-            phone: profData.phone || '09171234567',
-            address: profData.address || 'Barangay Zapatera, Cebu City',
-            sitio: profData.sitio || 'Sitio Zapatera Proper',
-            civil_status: profData.civil_status || 'Single',
-            voter_status: profData.voter_status || 'Registered Voter',
-            id_type: profData.id_type || 'Barangay ID',
-            id_number: profData.id_number || 'BZ-RES-001',
-            is_active: profData.is_active ?? true,
-            is_locked: profData.is_locked ?? false,
-            failed_attempts: profData.failed_attempts ?? 0,
-            created_at: profData.created_at || new Date().toISOString(),
-          };
-        }
-      } catch (err: any) {
-        console.warn('Profiles table fallback check:', err);
-      }
-    }
-
-    // 3. FALLBACK TO LOCAL STORAGE
-    if (!authenticatedUser) {
-      try {
-        const storedDb = await MobileStorage.getItem('zapatera_residents_db');
-        const residents: ResidentUser[] = storedDb ? JSON.parse(storedDb) : [];
-        const found = residents.find((r) => r.email.toLowerCase() === cleanEmail);
-
-        if (found) {
-          if (!found.password || found.password === loginPassword || loginPassword === 'password123') {
-            authenticatedUser = found;
-          }
-        }
-      } catch (err) {
-        console.warn('MobileStorage login error:', err);
-      }
-    }
-
-    // 4. VERIFY CREDENTIALS
-    if (!authenticatedUser) {
-      await recordFailedAttempt(cleanEmail);
-      const updatedLock = await isAccountLocked(cleanEmail);
-
-      if (updatedLock) {
-        setErrorMessage('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Zapatera administration.');
-      } else {
-        setErrorMessage('Invalid Gmail or password. Please check your credentials and try again.');
-      }
-
+      setErrorMessage('Authentication service error. Please try again.');
       setLoading(false);
       return;
     }
 
-    // 5. SUCCESSFUL CREDENTIALS -> SEND OTP TO USER GMAIL VIA SUPABASE
+    // 5. SUCCESSFUL PASSWORD VERIFICATION -> DISPATCH 6-DIGIT OTP TO GMAIL
     await resetFailedAttempts(cleanEmail);
-    setPendingUser(authenticatedUser);
-    setAuthStep('otp');
 
     try {
       if (isSupabaseConfigured()) {
         const { error: otpErr } = await supabase.auth.signInWithOtp({
           email: cleanEmail,
           options: {
-            shouldCreateUser: true,
+            shouldCreateUser: false,
           },
         });
 
         if (otpErr) {
-          console.warn('Supabase signInWithOtp notice:', otpErr.message);
+          setErrorMessage('Failed to send verification code to your Gmail. Please try again.');
+          setLoading(false);
+          return;
         }
       }
     } catch (err: any) {
-      console.warn('Supabase signInWithOtp exception:', err);
+      setErrorMessage('Failed to send OTP code to your Gmail. Please check your connection.');
+      setLoading(false);
+      return;
     }
 
-    setInfoBanner(
-      `MFA Security Verification: A 6-digit verification code has been sent directly to your Gmail inbox (${cleanEmail}). Please check your Gmail Inbox (or Spam folder) and enter the 6-digit code below.`
-    );
+    const residentPayload: ResidentUser = {
+      id: profData.id,
+      email: cleanEmail,
+      full_name: profData.full_name || authUser?.user_metadata?.full_name || 'Resident User',
+      first_name: profData.first_name || '',
+      last_name: profData.last_name || '',
+      middle_initial: profData.middle_initial || '',
+      role: 'resident',
+      password: '',
+      phone: profData.phone || '09171234567',
+      address: profData.address || 'Barangay Zapatera, Cebu City',
+      sitio: profData.sitio || 'Sitio Zapatera Proper',
+      civil_status: profData.civil_status || 'Single',
+      voter_status: profData.voter_status || 'Registered Voter',
+      id_type: profData.id_type || 'Barangay ID',
+      id_number: profData.id_number || 'BZ-RES-001',
+      is_active: true,
+      is_locked: false,
+      failed_attempts: 0,
+      created_at: profData.created_at || new Date().toISOString(),
+    };
 
+    setPendingUser(residentPayload);
+    setAuthStep('otp');
+    setInfoBanner(
+      `Password verified! A 6-digit verification code has been dispatched to ${cleanEmail}. Please check your Gmail Inbox or Spam folder and enter it below.`
+    );
     setLoading(false);
   };
 
@@ -353,8 +347,9 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
         });
         if (!error && (data?.session || data?.user)) {
           isVerified = true;
-        } else if (error) {
-          console.warn('Supabase verifyOtp notice:', error.message);
+          if (data?.session) {
+            await supabase.auth.setSession(data.session);
+          }
         }
       } catch (vErr) {
         console.warn('Supabase verifyOtp exception:', vErr);
@@ -368,7 +363,7 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
       return;
     }
 
-    setErrorMessage('Security Error: Invalid or expired 6-digit verification code. Please check your Gmail inbox and try again.');
+    setErrorMessage('Invalid or expired 6-digit verification code. Please check your Gmail inbox or request a new code.');
     setLoading(false);
   };
 
@@ -380,18 +375,23 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
 
     try {
       if (isSupabaseConfigured()) {
-        await supabase.auth.signInWithOtp({
+        const { error: otpErr } = await supabase.auth.signInWithOtp({
           email: pendingUser.email.trim().toLowerCase(),
-          options: { shouldCreateUser: true },
+          options: { shouldCreateUser: false },
         });
+
+        if (otpErr) {
+          setErrorMessage('Failed to resend code. Please try again in a few moments.');
+        } else {
+          setInfoBanner(
+            `A new 6-digit verification code has been re-sent to ${pendingUser.email}. Please check your Gmail inbox.`
+          );
+        }
       }
     } catch (err: any) {
-      console.warn('Resend OTP error notice:', err);
+      setErrorMessage('Resend failed. Please check your internet connection.');
     }
 
-    setInfoBanner(
-      `A new 6-digit verification code has been re-sent to your Gmail inbox (${pendingUser.email}). Please check your Gmail Inbox or Spam folder.`
-    );
     setLoading(false);
   };
 
@@ -745,6 +745,19 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
             <Text style={styles.errorTitle}>Validation Alert</Text>
           </View>
           <Text style={styles.errorText}>{errorMessage}</Text>
+          {showResendConfirmation ? (
+            <TouchableOpacity
+              style={[styles.primaryBtn, { marginTop: 8, paddingVertical: 8, backgroundColor: '#2563eb' }]}
+              onPress={handleResendConfirmation}
+              disabled={resendLoading}
+            >
+              {resendLoading ? (
+                <ActivityIndicator color="#ffffff" size="small" />
+              ) : (
+                <Text style={[styles.primaryBtnText, { fontSize: 12 }]}>Resend Confirmation Email Link ✉</Text>
+              )}
+            </TouchableOpacity>
+          ) : null}
         </View>
       ) : null}
 

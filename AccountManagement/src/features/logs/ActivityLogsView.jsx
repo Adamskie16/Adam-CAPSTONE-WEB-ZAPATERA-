@@ -71,13 +71,20 @@ export default function ActivityLogsView({ currentUser, isDarkMode }) {
         localStorage.getItem('zapatera_admin_session') ||
         'null'
       );
-    const storedPassword = session?.password;
+    const loggedInEmail = (session?.email || '').trim().toLowerCase();
+    if (!loggedInEmail) return false;
 
-    if (storedPassword && inputPassword === storedPassword) return true;
-
-    const fallbackPasswords = ['superadmin123', 'admin123', 'password123', 'admin', 'superadmin', '123456789'];
-    if (fallbackPasswords.includes(inputPassword)) return true;
-
+    if (isSupabaseConfigured()) {
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: loggedInEmail,
+          password: inputPassword,
+        });
+        if (!error && data?.user) return true;
+      } catch (e) {
+        return false;
+      }
+    }
     return false;
   }
 
