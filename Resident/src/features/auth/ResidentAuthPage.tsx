@@ -234,6 +234,43 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
       console.warn('Supabase signInWithPassword exception:', err);
     }
 
+    // 2.5 CHECK PROFILES TABLE FOR DIRECT PASSWORD MATCH
+    if (!authenticatedUser && isSupabaseConfigured()) {
+      try {
+        const { data: profData } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('email', cleanEmail)
+          .maybeSingle();
+
+        if (profData && profData.password && profData.password === loginPassword) {
+          authenticatedUser = {
+            id: profData.id,
+            email: cleanEmail,
+            full_name: profData.full_name || 'Resident User',
+            first_name: profData.first_name || '',
+            last_name: profData.last_name || '',
+            middle_initial: profData.middle_initial || '',
+            role: 'resident',
+            password: loginPassword,
+            phone: profData.phone || '09171234567',
+            address: profData.address || 'Barangay Zapatera, Cebu City',
+            sitio: profData.sitio || 'Sitio Zapatera Proper',
+            civil_status: profData.civil_status || 'Single',
+            voter_status: profData.voter_status || 'Registered Voter',
+            id_type: profData.id_type || 'Barangay ID',
+            id_number: profData.id_number || 'BZ-RES-001',
+            is_active: profData.is_active ?? true,
+            is_locked: profData.is_locked ?? false,
+            failed_attempts: profData.failed_attempts ?? 0,
+            created_at: profData.created_at || new Date().toISOString(),
+          };
+        }
+      } catch (err: any) {
+        console.warn('Profiles table fallback check:', err);
+      }
+    }
+
     // 3. FALLBACK TO LOCAL STORAGE
     if (!authenticatedUser) {
       try {

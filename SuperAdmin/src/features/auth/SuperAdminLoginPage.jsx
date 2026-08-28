@@ -119,38 +119,72 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
 
     let foundUser = null;
 
-    // 1. Verify credentials from public.profiles table first
+    // 1. First try Supabase Auth signInWithPassword (handles auth.users secure hashed credentials)
     try {
       if (isSupabaseConfigured()) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('email', cleanEmail)
-          .maybeSingle();
+        const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password: password,
+        });
 
-        if (profile) {
-          const pRole = (profile.role || '').toLowerCase();
-          if (pRole === 'super_admin' || pRole === 'superadmin') {
-            if (profile.password && profile.password === password) {
-              foundUser = {
-                id: profile.id,
-                email: profile.email,
-                full_name: profile.full_name || cleanEmail.split('@')[0],
-                role: 'super_admin',
-                password: profile.password,
-                phone: profile.phone || '',
-                address: profile.address || '',
-                is_active: true,
-                failed_attempts: 0,
-                is_locked: false,
-              };
+        if (!authErr && authData?.user) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('email', cleanEmail)
+            .maybeSingle();
+
+          foundUser = {
+            id: profile?.id || authData.user.id,
+            email: profile?.email || cleanEmail,
+            full_name: profile?.full_name || authData.user.user_metadata?.full_name || cleanEmail.split('@')[0],
+            role: 'super_admin',
+            phone: profile?.phone || '',
+            address: profile?.address || 'Barangay Zapatera, Cebu City',
+            is_active: true,
+            failed_attempts: 0,
+            is_locked: false,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('Supabase Auth check notice:', e);
+    }
+
+    // 2. If not authenticated via Supabase Auth, check public.profiles table
+    if (!foundUser) {
+      try {
+        if (isSupabaseConfigured()) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('email', cleanEmail)
+            .maybeSingle();
+
+          if (profile) {
+            const pRole = (profile.role || '').toLowerCase();
+            if (pRole === 'super_admin' || pRole === 'superadmin' || pRole === 'admin') {
+              if (profile.password && profile.password === password) {
+                foundUser = {
+                  id: profile.id,
+                  email: profile.email,
+                  full_name: profile.full_name || cleanEmail.split('@')[0],
+                  role: 'super_admin',
+                  password: profile.password,
+                  phone: profile.phone || '',
+                  address: profile.address || '',
+                  is_active: true,
+                  failed_attempts: 0,
+                  is_locked: false,
+                };
+              }
             }
           }
         }
-      }
-    } catch (e) {}
+      } catch (e) {}
+    }
 
-    // 2. Check local seed admins if not found in profiles
+    // 3. Check local seed admins if not found in profiles
     if (!foundUser) {
       const localAdmins = StorageService.getSuperAdmins ? StorageService.getSuperAdmins() : (StorageService.getAdmins ? StorageService.getAdmins() : []);
       const localMatch = localAdmins.find(
