@@ -4,8 +4,9 @@ import Modal from '../../components/Modal';
 import Badge from '../../components/Badge';
 import { Inbox, Search, Filter, Eye, CheckSquare, FileText, User, Mail, DollarSign } from 'lucide-react';
 import { formatDate, formatCurrency } from '../../core/security';
+import { TableSkeleton } from '../../components/SkeletonLoader';
 
-export default function ReceiveRequestView({ requests, onProcessRequest }) {
+export default function ReceiveRequestView({ requests = [], onProcessRequest, loading = false }) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedReq, setSelectedReq] = useState(null);
@@ -82,41 +83,51 @@ export default function ReceiveRequestView({ requests, onProcessRequest }) {
                 <th className="p-4 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredRequests.map((req) => (
-                <tr key={req.id} className="hover:bg-slate-50/80 transition-colors">
-                  <td className="p-4 font-mono font-bold text-slate-900">{req.tracking_number}</td>
-                  <td className="p-4">
-                    <p className="font-bold text-slate-800">{req.resident_name}</p>
-                    <p className="text-[11px] text-slate-400">{req.resident_email}</p>
-                  </td>
-                  <td className="p-4">
-                    <p className="font-semibold text-slate-800">{req.document_title}</p>
-                    <p className="text-[11px] text-emerald-700 font-bold">
-                      {req.fee > 0 ? formatCurrency(req.fee) : 'Free'}
-                    </p>
-                  </td>
-                  <td className="p-4">
-                    <span className="inline-flex items-center px-2.5 py-1 rounded bg-blue-50 text-blue-800 border border-blue-200 font-mono text-[11px] font-bold">
-                      {req.pickup_time_slot || '3:00 PM - 3:30 PM'}
-                    </span>
-                  </td>
-                  <td className="p-4 text-slate-600 max-w-xs truncate">{req.purpose}</td>
-                  <td className="p-4">
-                    <Badge variant={req.status}>{req.status?.replace('_', ' ')}</Badge>
-                  </td>
-                  <td className="p-4 text-slate-500">{formatDate(req.created_at)}</td>
-                  <td className="p-4 text-right space-x-2">
-                    <button
-                      onClick={() => setSelectedReq(req)}
-                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-semibold inline-flex items-center space-x-1"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>Inspect</span>
-                    </button>
+            <tbody className="divide-y divide-slate-100 font-medium">
+              {loading ? (
+                <TableSkeleton rows={6} cols={8} isDarkMode={false} />
+              ) : filteredRequests.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="p-8 text-center text-slate-400">
+                    No requests found matching criteria.
                   </td>
                 </tr>
-              ))}
+              ) : (
+                filteredRequests.map((req) => (
+                  <tr key={req.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="p-4 font-mono font-bold text-slate-900">{req.tracking_number}</td>
+                    <td className="p-4">
+                      <p className="font-bold text-slate-800">{req.resident_name}</p>
+                      <p className="text-[11px] text-slate-400">{req.resident_email}</p>
+                    </td>
+                    <td className="p-4">
+                      <p className="font-semibold text-slate-800">{req.document_title}</p>
+                      <p className="text-[11px] text-emerald-700 font-bold">
+                        {req.fee > 0 ? formatCurrency(req.fee) : 'Free'}
+                      </p>
+                    </td>
+                    <td className="p-4">
+                      <span className="inline-flex items-center px-2.5 py-1 rounded bg-blue-50 text-blue-800 border border-blue-200 font-mono text-[11px] font-bold">
+                        {req.pickup_time_slot || '3:00 PM - 3:30 PM'}
+                      </span>
+                    </td>
+                    <td className="p-4 text-slate-600 max-w-xs truncate">{req.purpose}</td>
+                    <td className="p-4">
+                      <Badge variant={req.status}>{req.status?.replace('_', ' ')}</Badge>
+                    </td>
+                    <td className="p-4 text-slate-500">{formatDate(req.created_at)}</td>
+                    <td className="p-4 text-right space-x-2">
+                      <button
+                        onClick={() => setSelectedReq(req)}
+                        className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-semibold inline-flex items-center space-x-1 cursor-pointer"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>Inspect</span>
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

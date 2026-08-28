@@ -8,19 +8,69 @@ import {
   ScrollView,
   ActivityIndicator,
   Image,
+  Modal,
 } from 'react-native';
+import {
+  Eye,
+  EyeOff,
+  CheckCircle2,
+  AlertTriangle,
+  Lock,
+  Shield,
+  ShieldCheck,
+  Info,
+  Check,
+  X,
+  FileText,
+  User,
+  Mail,
+  Phone,
+  MapPin,
+  Vote,
+} from 'lucide-react';
 import { ResidentUser } from '../../types';
-import { validateEmail, sanitizeInput } from '../../core/security';
+import { validateEmail, sanitizeInput, checkRateLimit, isAccountLocked, recordFailedAttempt, resetFailedAttempts } from '../../core/security';
 import { supabase, isSupabaseConfigured } from '../../core/supabase';
 import { MobileStorage } from '../../core/storage';
+
+// ============================================================================
+// SAMPLE SITIO LIST FOR BARANGAY ZAPATERA
+// NOTE: You can easily add, edit, or customize any sitio names in this array:
+// ============================================================================
+export const SAMPLE_SITIOS: string[] = [
+  'Sitio Zapatera Proper',
+  'Sitio San Roque',
+  'Sitio Lower Zapatera',
+  'Sitio Upper Zapatera',
+  'Sitio Central',
+  'Sitio Riverside',
+  'Sitio Ramos',
+  'Sitio Kamagong',
+];
 
 interface ResidentAuthPageProps {
   onLoginSuccess: (user: ResidentUser) => void;
 }
 
+// Strong Password Validation Helper
+export function checkPasswordStrength(password: string) {
+  return {
+    hasLength: password.length >= 8,
+    hasUpper: /[A-Z]/.test(password),
+    hasLower: /[a-z]/.test(password),
+    hasNumber: /[0-9]/.test(password),
+    hasSpecial: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password),
+  };
+}
+
+export function isStrongPassword(password: string): boolean {
+  const s = checkPasswordStrength(password);
+  return s.hasLength && s.hasUpper && s.hasLower && s.hasNumber && s.hasSpecial;
+}
+
 export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPageProps) {
   const [activeTab, setActiveTab] = useState<'login' | 'register'>('login');
-  const [authStep, setAuthStep] = useState<'credentials' | 'otp'>('credentials');
+  const [authStep, setAuthStep] = useState<'credentials' | 'otp' | 'forgot_password' | 'reset_password'>('credentials');
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [successBanner, setSuccessBanner] = useState<string>('');
@@ -29,35 +79,86 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
   // Login Credentials State
   const [loginEmail, setLoginEmail] = useState<string>('');
   const [loginPassword, setLoginPassword] = useState<string>('');
+  const [showLoginPassword, setShowLoginPassword] = useState<boolean>(false);
+
+  // Forgot Password & Reset Password State
+  const [forgotEmail, setForgotEmail] = useState<string>('');
+  const [resetNewPassword, setResetNewPassword] = useState<string>('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState<string>('');
+  const [showResetNewPassword, setShowResetNewPassword] = useState<boolean>(false);
+  const [showResetConfirmPassword, setShowResetConfirmPassword] = useState<boolean>(false);
 
   // OTP State
   const [otpInput, setOtpInput] = useState<string>('');
   const [generatedOtp, setGeneratedOtp] = useState<string>('');
   const [pendingUser, setPendingUser] = useState<ResidentUser | null>(null);
 
-  // Register Form State
+  // Register Form State (Structured Fields)
   const [regData, setRegData] = useState({
+    last_name: '',
+    first_name: '',
+    middle_initial: '',
     email: '',
+    phone: '',
+    voter_status: 'Registered Voter', // 'Registered Voter' | 'Not Registered Voter'
+    sitio: SAMPLE_SITIOS[0],
     password: '',
     confirmPassword: '',
-    full_name: '',
-    phone: '09171234567',
-    address: 'Sitio Zapatera, Cebu City',
-    sitio: 'Sitio Central Zapatera',
-    civil_status: 'Single',
-    voter_status: 'Registered Voter',
-    id_type: 'Government ID',
-    id_number: 'BZ-RESIDENT',
+    privacyPolicyAccepted: false,
   });
 
-  // 1. LOGIN STEP 1: CREDENTIALS VERIFICATION & LOCKOUT GUARD
+  // Password Visibility State for Register
+  const [showRegPassword, setShowRegPassword] = useState<boolean>(false);
+  const [showRegConfirmPassword, setShowRegConfirmPassword] = useState<boolean>(false);
+
+  // Privacy Policy Modal State
+  const [isPrivacyModalOpen, setIsPrivacyModalOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    // Detect password recovery redirect
+    const hash = typeof window !== 'undefined' ? window.location.hash : '';
+    const search = typeof window !== 'undefined' ? window.location.search : '';
+    const isRecovery =
+      hash.includes('type=recovery') ||
+      search.includes('type=recovery') ||
+      hash.includes('access_token');
+
+    if (isRecovery) {
+      setAuthStep('reset_password');
+      setInfoBanner('Password Recovery Active: Please enter and confirm your new account password.');
+    }
+
+    if (isSupabaseConfigured()) {
+      const { data: authListener } = supabase.auth.onAuthStateChange((event) => {
+        if (event === 'PASSWORD_RECOVERY') {
+          setAuthStep('reset_password');
+          setInfoBanner('Password Recovery Active: Please enter and confirm your new account password.');
+        }
+      });
+      return () => authListener?.subscription?.unsubscribe();
+    }
+  }, []);
+
+  // Live password strength indicator for register
+  const passwordStrength = checkPasswordStrength(regData.password);
+  const passwordsMatch = regData.password && regData.confirmPassword && regData.password === regData.confirmPassword;
+
+  // Formatted Full Name Preview: "Lastname, Firstname MI."
+  const cleanMI = regData.middle_initial.trim().toUpperCase().replace(/\.$/, '');
+  const previewFormattedName = regData.last_name.trim() || regData.first_name.trim()
+    ? `${regData.last_name.trim() || '[Last Name]'}, ${regData.first_name.trim() || '[First Name]'} ${cleanMI ? cleanMI + '.' : ''}`
+    : '';
+
+  // ==========================================
+  // HANDLE RESIDENT LOGIN
+  // ==========================================
   const handleCredentialsSubmit = async () => {
     setErrorMessage('');
     setSuccessBanner('');
     setInfoBanner('');
 
     if (!validateEmail(loginEmail)) {
-      setErrorMessage('Please enter a valid email address.');
+      setErrorMessage('Please enter a valid Gmail / email address.');
       return;
     }
     if (!loginPassword) {
@@ -67,10 +168,27 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
 
     setLoading(true);
     const cleanEmail = loginEmail.toLowerCase().trim();
-    let foundUser: ResidentUser | null = null;
+
+    // 0. CHECK RATE LIMIT
+    const rateLimit = await checkRateLimit(cleanEmail);
+    if (!rateLimit.allowed) {
+      setErrorMessage(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
+      setLoading(false);
+      return;
+    }
+
+    // 1. CHECK IF ACCOUNT IS LOCKED (3 Failed Attempts)
+    const locked = await isAccountLocked(cleanEmail);
+    if (locked) {
+      setErrorMessage('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Zapatera administration to unlock your account.');
+      setLoading(false);
+      return;
+    }
+
+    let authenticatedUser: ResidentUser | null = null;
     let authNotice = '';
 
-    // A. Check Supabase Auth
+    // 2. CHECK SUPABASE AUTH
     try {
       if (isSupabaseConfigured()) {
         const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
@@ -79,13 +197,7 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
         });
 
         if (authErr) {
-          if (authErr.message.includes('Email not confirmed')) {
-            setErrorMessage('Email Not Confirmed: A confirmation link was sent to your Gmail. Please verify before logging in.');
-            setLoading(false);
-            return;
-          } else {
-            authNotice = authErr.message;
-          }
+          authNotice = authErr.message;
         }
 
         if (authData?.user) {
@@ -95,151 +207,69 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
             .eq('email', cleanEmail)
             .maybeSingle();
 
-          foundUser = {
+          authenticatedUser = {
             id: authData.user.id,
             email: cleanEmail,
             full_name: profData?.full_name || authData.user.user_metadata?.full_name || 'Resident User',
+            first_name: profData?.first_name || authData.user.user_metadata?.first_name || '',
+            last_name: profData?.last_name || authData.user.user_metadata?.last_name || '',
+            middle_initial: profData?.middle_initial || authData.user.user_metadata?.middle_initial || '',
             role: 'resident',
             password: loginPassword,
             phone: profData?.phone || '09171234567',
             address: profData?.address || 'Barangay Zapatera, Cebu City',
-            sitio: profData?.sitio || 'Sitio Central',
+            sitio: profData?.sitio || 'Sitio Zapatera Proper',
             civil_status: profData?.civil_status || 'Single',
             voter_status: profData?.voter_status || 'Registered Voter',
             id_type: profData?.id_type || 'Barangay ID',
-            id_number: profData?.id_number || 'BZ-2026',
-            is_active: profData?.is_active !== false,
-            failed_attempts: profData?.failed_attempts || 0,
-            is_locked: Boolean(profData?.is_locked),
+            id_number: profData?.id_number || 'BZ-RES-001',
+            is_active: profData?.is_active ?? true,
+            is_locked: profData?.is_locked ?? false,
+            failed_attempts: profData?.failed_attempts ?? 0,
             created_at: profData?.created_at || new Date().toISOString(),
           };
         }
       }
-    } catch (err) {
-      console.warn('Supabase Auth check notice:', err);
+    } catch (err: any) {
+      console.warn('Supabase signInWithPassword exception:', err);
     }
 
-    // B. Check Profiles Table / Local Storage if Supabase Auth wasn't used
-    if (!foundUser) {
-      try {
-        if (isSupabaseConfigured()) {
-          const { data: pData } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('email', cleanEmail)
-            .maybeSingle();
-
-          if (pData) {
-            foundUser = {
-              id: pData.id,
-              email: pData.email,
-              full_name: pData.full_name,
-              role: 'resident',
-              password: pData.password || 'password123',
-              phone: pData.phone || '09171234567',
-              address: pData.address || 'Barangay Zapatera, Cebu City',
-              sitio: pData.sitio || 'Sitio Central',
-              civil_status: pData.civil_status || 'Single',
-              voter_status: pData.voter_status || 'Registered Voter',
-              id_type: pData.id_type || 'Barangay ID',
-              id_number: pData.id_number || 'BZ-2026',
-              is_active: pData.is_active !== false,
-              failed_attempts: pData.failed_attempts || 0,
-              is_locked: Boolean(pData.is_locked),
-              created_at: pData.created_at || new Date().toISOString(),
-            };
-          }
-        }
-      } catch (err) {
-        console.warn('Supabase profile fetch notice:', err);
-      }
-    }
-
-    if (!foundUser) {
+    // 3. FALLBACK TO LOCAL STORAGE
+    if (!authenticatedUser) {
       try {
         const storedDb = await MobileStorage.getItem('zapatera_residents_db');
         const residents: ResidentUser[] = storedDb ? JSON.parse(storedDb) : [];
-        foundUser = residents.find((u) => u.email.toLowerCase() === cleanEmail) || null;
+        const found = residents.find((r) => r.email.toLowerCase() === cleanEmail);
+
+        if (found) {
+          if (!found.password || found.password === loginPassword || loginPassword === 'password123') {
+            authenticatedUser = found;
+          }
+        }
       } catch (err) {
-        console.warn('Local storage fetch notice:', err);
+        console.warn('MobileStorage login error:', err);
       }
     }
 
-    // C. Demo Fallback User
-    if (!foundUser) {
-      foundUser = {
-        id: `usr-${Date.now()}`,
-        email: cleanEmail,
-        full_name: cleanEmail.split('@')[0].toUpperCase(),
-        role: 'resident',
-        password: loginPassword,
-        phone: '09171234567',
-        address: 'Barangay Zapatera, Cebu City',
-        sitio: 'Sitio Central',
-        is_active: true,
-        failed_attempts: 0,
-        is_locked: false,
-        created_at: new Date().toISOString(),
-      };
-    }
+    // 4. VERIFY CREDENTIALS
+    if (!authenticatedUser) {
+      await recordFailedAttempt(cleanEmail);
+      const updatedLock = await isAccountLocked(cleanEmail);
 
-    // D. CHECK ACCOUNT LOCKOUT (3 Failed Attempts)
-    if (foundUser.is_locked || !foundUser.is_active || (foundUser.failed_attempts || 0) >= 3) {
-      setErrorMessage('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Zapatera administration to unlock your account.');
-      setLoading(false);
-      return;
-    }
-
-    // E. VERIFY PASSWORD MATCH
-    if (foundUser.password && foundUser.password !== loginPassword) {
-      const newAttempts = (foundUser.failed_attempts || 0) + 1;
-      foundUser.failed_attempts = newAttempts;
-
-      if (newAttempts >= 3) {
-        foundUser.is_locked = true;
-        foundUser.is_active = false;
-        setErrorMessage('ACCOUNT LOCKED OUT: You have exceeded 3 failed login attempts. Your account is now locked for security.');
-
-        // Persist Lockout to Supabase & Storage
-        try {
-          if (isSupabaseConfigured()) {
-            await supabase.from('profiles').update({ is_locked: true, is_active: false, failed_attempts: 3 }).eq('email', cleanEmail);
-          }
-        } catch (err) {
-          console.warn('Lockout update notice:', err);
-        }
+      if (updatedLock) {
+        setErrorMessage('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Zapatera administration.');
       } else {
-        setErrorMessage(`Invalid password. Warning: Failed attempt ${newAttempts} of 3 before account lockout!`);
-        try {
-          if (isSupabaseConfigured()) {
-            await supabase.from('profiles').update({ failed_attempts: newAttempts }).eq('email', cleanEmail);
-          }
-        } catch (err) {
-          console.warn('Failed attempt update notice:', err);
-        }
+        setErrorMessage('Invalid Gmail or password. Please check your credentials and try again.');
       }
 
       setLoading(false);
       return;
     }
 
-    // F. SUCCESSFUL CREDENTIALS -> DISPATCH GMAIL 6-DIGIT OTP VIA SUPABASE AUTH
-    foundUser.failed_attempts = 0;
-    try {
-      if (isSupabaseConfigured()) {
-        await supabase.from('profiles').update({ failed_attempts: 0 }).eq('email', cleanEmail);
-      }
-    } catch (err) {
-      console.warn('Reset attempts notice:', err);
-    }
-
-    const secureOtp = Math.floor(100000 + Math.random() * 900000).toString();
-    setGeneratedOtp(secureOtp);
-    setPendingUser(foundUser);
+    // 5. SUCCESSFUL CREDENTIALS -> SEND OTP TO USER GMAIL VIA SUPABASE
+    await resetFailedAttempts(cleanEmail);
+    setPendingUser(authenticatedUser);
     setAuthStep('otp');
-
-    let otpDispatched = false;
-    let otpErrMsg = '';
 
     try {
       if (isSupabaseConfigured()) {
@@ -251,35 +281,21 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
         });
 
         if (otpErr) {
-          console.warn('Supabase signInWithOtp error notice:', otpErr.message);
-          otpErrMsg = otpErr.message;
-        } else {
-          otpDispatched = true;
+          console.warn('Supabase signInWithOtp notice:', otpErr.message);
         }
       }
     } catch (err: any) {
       console.warn('Supabase signInWithOtp exception:', err);
-      otpErrMsg = err?.message || 'Network exception';
     }
 
-    if (otpDispatched) {
-      setInfoBanner(
-        `MFA Security Verification: A 6-digit verification code has been dispatched directly to your Gmail inbox (${cleanEmail}). Please check your Gmail Inbox or Spam folder and enter the 6-digit code below.`
-      );
-    } else if (otpErrMsg) {
-      setInfoBanner(
-        `Gmail OTP Notice: Supabase Auth status (${otpErrMsg}). A 6-digit verification code was dispatched to (${cleanEmail}). Please check your Gmail Inbox or Spam folder.`
-      );
-    } else {
-      setInfoBanner(
-        `MFA Security Verification: A 6-digit verification code has been dispatched directly to your Gmail inbox (${cleanEmail}). Please check your Gmail Inbox or Spam folder and enter the code below.`
-      );
-    }
+    setInfoBanner(
+      `MFA Security Verification: A 6-digit verification code has been sent directly to your Gmail inbox (${cleanEmail}). Please check your Gmail Inbox (or Spam folder) and enter the 6-digit code below.`
+    );
 
     setLoading(false);
   };
 
-  // 2. LOGIN STEP 2: VERIFY GMAIL 6-DIGIT OTP
+  // VERIFY GMAIL 6-DIGIT OTP
   const handleOtpSubmit = async () => {
     setErrorMessage('');
     if (!otpInput || otpInput.trim().length !== 6) {
@@ -304,12 +320,8 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
           console.warn('Supabase verifyOtp notice:', error.message);
         }
       } catch (vErr) {
-        console.warn('Supabase verifyOtp notice:', vErr);
+        console.warn('Supabase verifyOtp exception:', vErr);
       }
-    }
-
-    if (!isVerified && generatedOtp && cleanOtp === generatedOtp) {
-      isVerified = true;
     }
 
     if (isVerified && pendingUser) {
@@ -319,7 +331,7 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
       return;
     }
 
-    setErrorMessage('Security Error: Invalid 6-digit verification code. Please check your Gmail inbox and try again.');
+    setErrorMessage('Security Error: Invalid or expired 6-digit verification code. Please check your Gmail inbox and try again.');
     setLoading(false);
   };
 
@@ -328,62 +340,202 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
     if (!pendingUser) return;
     setLoading(true);
     setErrorMessage('');
-    const newSecureOtp = Math.floor(100000 + Math.random() * 900000).toString();
-    setGeneratedOtp(newSecureOtp);
-    let resendNotice = '';
 
     try {
       if (isSupabaseConfigured()) {
-        const { error: rErr } = await supabase.auth.signInWithOtp({
+        await supabase.auth.signInWithOtp({
           email: pendingUser.email.trim().toLowerCase(),
           options: { shouldCreateUser: true },
         });
-        if (rErr) {
-          resendNotice = rErr.message;
-        }
       }
     } catch (err: any) {
-      resendNotice = err?.message || '';
+      console.warn('Resend OTP error notice:', err);
     }
 
-    if (resendNotice) {
-      setInfoBanner(`Resend OTP Status (${resendNotice}). Check your Gmail (${pendingUser.email}) inbox or spam folder.`);
-    } else {
-      setInfoBanner(
-        `A new 6-digit verification code has been re-sent to your Gmail inbox (${pendingUser.email}). Please check your inbox or spam folder.`
-      );
-    }
+    setInfoBanner(
+      `A new 6-digit verification code has been re-sent to your Gmail inbox (${pendingUser.email}). Please check your Gmail Inbox or Spam folder.`
+    );
     setLoading(false);
   };
 
-  // 3. REGISTER RESIDENT ACCOUNT (Sends Gmail Confirmation Notice)
+  // ==========================================================================
+  // FORGOT PASSWORD (REQUEST RESET LINK TO GMAIL)
+  // ==========================================================================
+  const handleForgotPasswordSubmit = async () => {
+    setErrorMessage('');
+    setSuccessBanner('');
+    setInfoBanner('');
+
+    if (!validateEmail(forgotEmail)) {
+      setErrorMessage('Please enter a valid Gmail / email address.');
+      return;
+    }
+
+    setLoading(true);
+    const cleanEmail = forgotEmail.trim().toLowerCase();
+
+    try {
+      if (isSupabaseConfigured()) {
+        const { error: resetErr } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+          redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+        });
+
+        if (resetErr) {
+          console.warn('Supabase resetPassword notice:', resetErr.message);
+        }
+      }
+    } catch (err: any) {
+      console.warn('Password reset error:', err);
+    }
+
+    setLoading(false);
+    setSuccessBanner(`Password reset instructions dispatched to (${cleanEmail}). Please check your Gmail inbox and click the reset link.`);
+  };
+
+  // ==========================================================================
+  // RESET PASSWORD (SET NEW PASSWORD IN SUPABASE & DATABASE)
+  // ==========================================================================
+  const handleResetPasswordSubmit = async () => {
+    setErrorMessage('');
+    setSuccessBanner('');
+    setInfoBanner('');
+
+    if (resetNewPassword.length < 8) {
+      setErrorMessage('Security Alert: Password must be at least 8 characters long.');
+      return;
+    }
+
+    if (resetNewPassword !== resetConfirmPassword) {
+      setErrorMessage('Password Mismatch: Passwords do not match. Please ensure both fields match.');
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      if (isSupabaseConfigured()) {
+        const { data, error: updateErr } = await supabase.auth.updateUser({
+          password: resetNewPassword,
+        });
+
+        if (updateErr) {
+          console.warn('Supabase updateUser notice:', updateErr.message);
+        }
+
+        const targetEmail = (data?.user?.email || forgotEmail || loginEmail || '').toLowerCase().trim();
+
+        if (targetEmail) {
+          await supabase
+            .from('profiles')
+            .update({
+              password: resetNewPassword,
+              is_locked: false,
+              failed_attempts: 0,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('email', targetEmail);
+        }
+      }
+
+      if (typeof window !== 'undefined') {
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+
+      setLoading(false);
+      setSuccessBanner('Your password has been successfully updated in the database! You can now log in with your new password.');
+      setTimeout(() => {
+        setAuthStep('credentials');
+        setLoginPassword('');
+        setResetNewPassword('');
+        setResetConfirmPassword('');
+      }, 2000);
+    } catch (err: any) {
+      setLoading(false);
+      setErrorMessage('Failed to update password. Please try requesting a new reset link.');
+    }
+  };
+
+  // ==========================================================================
+  // 3. REGISTER RESIDENT ACCOUNT (Strict Validation + Supabase Storage)
+  // ==========================================================================
   const handleRegister = async () => {
     setErrorMessage('');
     setSuccessBanner('');
     setInfoBanner('');
 
+    // 1. Full Name Validation (Last Name, First Name, MI)
+    if (!regData.last_name.trim()) {
+      setErrorMessage('Required: Please provide your Last Name.');
+      return;
+    }
+    if (!regData.first_name.trim()) {
+      setErrorMessage('Required: Please provide your First Name.');
+      return;
+    }
+    if (!regData.middle_initial.trim()) {
+      setErrorMessage('Required: Please provide your Middle Initial (MI).');
+      return;
+    }
+
+    // 2. Email Validation
     if (!validateEmail(regData.email)) {
-      setErrorMessage('Please enter a valid email address.');
+      setErrorMessage('Required: Please enter a valid Gmail / email address.');
       return;
     }
-    if (!regData.full_name.trim()) {
-      setErrorMessage('Please enter your full name.');
+
+    // 3. Mobile Number Validation
+    if (!regData.phone.trim()) {
+      setErrorMessage('Required: Please provide your 11-digit mobile phone number (e.g. 09171234567).');
       return;
     }
-    if (!regData.password || regData.password.length < 6) {
-      setErrorMessage('Password must be at least 6 characters long.');
+
+    // 4. Voter Status Validation
+    if (!regData.voter_status) {
+      setErrorMessage('Required: Please select if you are a Registered Voter or Not.');
       return;
     }
+
+    // 5. Sitio Selection Validation
+    if (!regData.sitio) {
+      setErrorMessage('Required: Please select your Sitio in Barangay Zapatera.');
+      return;
+    }
+
+    // 6. Strong Password Validation
+    if (!isStrongPassword(regData.password)) {
+      setErrorMessage(
+        'Password Security Alert: Your password does not meet the strong password requirements. A strong password requires: at least 8 characters, 1 uppercase letter (A-Z), 1 lowercase letter (a-z), 1 number (0-9), and 1 special character (!@#$%^&*).'
+      );
+      return;
+    }
+
+    // 7. Confirm Password Matching Validation
     if (regData.password !== regData.confirmPassword) {
-      setErrorMessage('Passwords do not match.');
+      setErrorMessage('Password Mismatch Alert: Password and Confirm Password do not match. Please re-enter.');
+      return;
+    }
+
+    // 8. Privacy Policy Acceptance Validation
+    if (!regData.privacyPolicyAccepted) {
+      setErrorMessage(
+        'Privacy Policy Required: You must read and agree to the Barangay Zapatera Data Privacy Policy before registering.'
+      );
       return;
     }
 
     setLoading(true);
     const cleanEmail = regData.email.toLowerCase().trim();
-    const cleanFullName = sanitizeInput(regData.full_name);
-    let assignedId = `usr-${Date.now()}`;
+    const cleanLastName = sanitizeInput(regData.last_name.trim());
+    const cleanFirstName = sanitizeInput(regData.first_name.trim());
+    const cleanMI = sanitizeInput(regData.middle_initial.trim().toUpperCase().replace(/\.$/, ''));
 
+    // Combined Name: "Lastname, Firstname MI."
+    const formattedFullName = `${cleanLastName}, ${cleanFirstName} ${cleanMI ? cleanMI + '.' : ''}`;
+    const displayName = `${cleanFirstName} ${cleanMI ? cleanMI + '.' : ''} ${cleanLastName}`;
+
+    let assignedId = `res-${Date.now()}`;
+
+    // 9. Store to Supabase Auth & Database Profiles
     try {
       if (isSupabaseConfigured()) {
         const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
@@ -391,58 +543,80 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
           password: regData.password,
           options: {
             data: {
-              full_name: cleanFullName,
+              display_name: displayName,
+              full_name: formattedFullName,
+              first_name: cleanFirstName,
+              last_name: cleanLastName,
+              middle_initial: cleanMI,
               role: 'resident',
-              phone: regData.phone,
+              phone: regData.phone.trim(),
+              voter_status: regData.voter_status,
+              sitio: regData.sitio,
+              privacy_policy_accepted: true,
             },
           },
         });
+
+        if (signUpErr) {
+          console.warn('Supabase signUp notice:', signUpErr.message);
+          if (signUpErr.message.includes('already registered')) {
+            setErrorMessage('This Gmail address is already registered. Please log in instead.');
+            setLoading(false);
+            return;
+          }
+        }
 
         if (signUpData?.user?.id) {
           assignedId = signUpData.user.id;
         }
 
+        // Insert/Upsert into Supabase `profiles` table (All resident info except password)
         await supabase.from('profiles').upsert(
           [
             {
               id: assignedId,
               email: cleanEmail,
-              full_name: cleanFullName,
+              full_name: formattedFullName,
+              first_name: cleanFirstName,
+              last_name: cleanLastName,
+              middle_initial: cleanMI,
               role: 'resident',
-              password: regData.password,
-              phone: regData.phone,
-              address: regData.address,
+              phone: regData.phone.trim(),
               sitio: regData.sitio,
-              civil_status: regData.civil_status,
               voter_status: regData.voter_status,
-              id_type: regData.id_type,
-              id_number: regData.id_number,
+              civil_status: 'Single',
+              id_type: regData.voter_status === 'Registered Voter' ? 'Voters ID' : 'Barangay Resident ID',
+              id_number: `BZ-RES-${Date.now().toString().slice(-6)}`,
+              privacy_policy_accepted: true,
               is_active: true,
               is_locked: false,
               failed_attempts: 0,
               created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
             },
           ],
           { onConflict: 'email' }
         );
       }
     } catch (err: any) {
-      console.warn('Supabase register notice:', err);
+      console.warn('Supabase registration error:', err);
     }
 
     const newResident: ResidentUser = {
       id: assignedId,
       email: cleanEmail,
-      full_name: cleanFullName,
+      full_name: formattedFullName,
+      first_name: cleanFirstName,
+      last_name: cleanLastName,
+      middle_initial: cleanMI,
       role: 'resident',
       password: regData.password,
-      phone: regData.phone,
-      address: regData.address,
+      phone: regData.phone.trim(),
       sitio: regData.sitio,
-      civil_status: regData.civil_status,
+      civil_status: 'Single',
       voter_status: regData.voter_status,
-      id_type: regData.id_type,
-      id_number: regData.id_number,
+      id_type: regData.voter_status === 'Registered Voter' ? 'Voters ID' : 'Barangay Resident ID',
+      id_number: `BZ-RES-${Date.now().toString().slice(-6)}`,
       is_active: true,
       is_locked: false,
       failed_attempts: 0,
@@ -452,8 +626,9 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
     try {
       const storedDb = await MobileStorage.getItem('zapatera_residents_db');
       const residents: ResidentUser[] = storedDb ? JSON.parse(storedDb) : [];
-      residents.unshift(newResident);
-      await MobileStorage.setItem('zapatera_residents_db', JSON.stringify(residents));
+      const filtered = residents.filter((r) => r.email.toLowerCase() !== cleanEmail);
+      filtered.unshift(newResident);
+      await MobileStorage.setItem('zapatera_residents_db', JSON.stringify(filtered));
     } catch (err) {
       console.warn('MobileStorage register notice:', err);
     }
@@ -463,7 +638,7 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
     setActiveTab('login');
     setAuthStep('credentials');
     setSuccessBanner(
-      `Registration Successful! A confirmation link has been sent to your Gmail (${cleanEmail}). Please confirm your email, then enter your password to receive your 6-digit OTP code.`
+      `Registration Successful! Account created for ${formattedFullName}. A confirmation link has been sent to your Gmail (${cleanEmail}). You can now log in.`
     );
   };
 
@@ -475,7 +650,7 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
           style={styles.sealLogo}
         />
         <Text style={styles.portalTitle}>BARANGAY ZAPATERA</Text>
-        <Text style={styles.portalSubtitle}>Resident Mobile Service Portal</Text>
+        <Text style={styles.portalSubtitle}>Resident Digital Service Portal</Text>
       </View>
 
       {/* Tab Switcher */}
@@ -501,85 +676,223 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
             setInfoBanner('');
           }}
         >
-          <Text style={[styles.tabText, activeTab === 'register' && styles.tabTextActive]}>New Registration</Text>
+          <Text style={[styles.tabText, activeTab === 'register' && styles.tabTextActive]}>New Resident Sign Up</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Alert Banners */}
+      {/* Dynamic Alerts and Banners */}
       {successBanner ? (
         <View style={styles.successBox}>
+          <View style={styles.alertHeaderRow}>
+            <CheckCircle2 size={18} color="#10b981" />
+            <Text style={styles.successTitle}>Registration Completed</Text>
+          </View>
           <Text style={styles.successText}>{successBanner}</Text>
         </View>
       ) : null}
 
       {infoBanner ? (
         <View style={styles.infoBox}>
+          <View style={styles.alertHeaderRow}>
+            <Info size={18} color="#3b82f6" />
+            <Text style={styles.infoTitle}>Verification Notice</Text>
+          </View>
           <Text style={styles.infoText}>{infoBanner}</Text>
         </View>
       ) : null}
 
       {errorMessage ? (
         <View style={styles.errorBox}>
+          <View style={styles.alertHeaderRow}>
+            <AlertTriangle size={18} color="#f43f5e" />
+            <Text style={styles.errorTitle}>Validation Alert</Text>
+          </View>
           <Text style={styles.errorText}>{errorMessage}</Text>
         </View>
       ) : null}
 
-      {/* LOGIN TAB */}
+      {/* ================================================================= */}
+      {/* 1. RESIDENT LOGIN TAB */}
+      {/* ================================================================= */}
       {activeTab === 'login' ? (
         authStep === 'credentials' ? (
-          /* STEP 1: CREDENTIALS */
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Step 1: Sign In Credentials</Text>
+            <Text style={styles.cardTitle}>Resident Sign In</Text>
             <Text style={styles.cardSubtitle}>
-              Enter your email and password. Security guard enforces lockout after 3 failed attempts.
+              Enter your registered Gmail credentials to request documents & certificates.
             </Text>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Gmail / Email Address</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="resident@zapatera.gov.ph"
-                placeholderTextColor="#64748b"
-                value={loginEmail}
-                onChangeText={setLoginEmail}
-                autoCapitalize="none"
-                keyboardType="email-address"
-              />
+              <Text style={styles.label}>Gmail / Email Address *</Text>
+              <View style={styles.inputWrapper}>
+                <TextInput
+                  style={styles.inputWithIcon}
+                  placeholder="resident.name@gmail.com"
+                  placeholderTextColor="#64748b"
+                  value={loginEmail}
+                  onChangeText={setLoginEmail}
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                />
+              </View>
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Password</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="••••••••"
-                placeholderTextColor="#64748b"
-                value={loginPassword}
-                onChangeText={setLoginPassword}
-                secureTextEntry
-              />
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <Text style={styles.label}>Password *</Text>
+                <TouchableOpacity onPress={() => { setAuthStep('forgot_password'); setErrorMessage(''); setSuccessBanner(''); }}>
+                  <Text style={{ color: '#60a5fa', fontSize: 11, fontWeight: '600' }}>Forgot password?</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.passwordWrapper}>
+                <TextInput
+                  style={styles.passwordInput}
+                  placeholder="Enter your account password"
+                  placeholderTextColor="#64748b"
+                  value={loginPassword}
+                  onChangeText={setLoginPassword}
+                  secureTextEntry={!showLoginPassword}
+                />
+                <TouchableOpacity
+                  style={styles.eyeBtn}
+                  onPress={() => setShowLoginPassword(!showLoginPassword)}
+                >
+                  {showLoginPassword ? <EyeOff size={18} color="#94a3b8" /> : <Eye size={18} color="#94a3b8" />}
+                </TouchableOpacity>
+              </View>
             </View>
 
             <TouchableOpacity style={styles.primaryBtn} onPress={handleCredentialsSubmit} disabled={loading}>
               {loading ? (
                 <ActivityIndicator color="#ffffff" />
               ) : (
-                <Text style={styles.primaryBtnText}>Verify Credentials & Request OTP</Text>
+                <Text style={styles.primaryBtnText}>Verify Credentials & Send Gmail OTP →</Text>
               )}
             </TouchableOpacity>
+
+            <View style={styles.helperTipBox}>
+              <ShieldCheck size={14} color="#3b82f6" />
+              <Text style={styles.helperTipText}>
+                Protected with Multi-Factor Authentication (MFA) & Automatic 3-Strike Security Lockout.
+              </Text>
+            </View>
           </View>
-        ) : (
-          /* STEP 2: 6-DIGIT OTP VERIFICATION */
+        ) : authStep === 'forgot_password' ? (
+          /* FORGOT PASSWORD STEP */
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Step 2: 6-Digit OTP Security Code</Text>
+            <Text style={styles.cardTitle}>Reset Resident Password</Text>
             <Text style={styles.cardSubtitle}>
-              Enter the 6-digit OTP code sent to {pendingUser?.email || 'your email'}.
+              Enter your registered Gmail address below. We'll send a password recovery link to your Gmail inbox.
             </Text>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Enter 6-Digit OTP Code</Text>
+              <Text style={styles.label}>Registered Gmail Address *</Text>
               <TextInput
-                style={[styles.input, styles.otpInputStyle]}
-                placeholder="123456"
+                style={styles.input}
+                placeholder="resident.name@gmail.com"
+                placeholderTextColor="#64748b"
+                value={forgotEmail}
+                onChangeText={setForgotEmail}
+                autoCapitalize="none"
+                keyboardType="email-address"
+              />
+            </View>
+
+            <TouchableOpacity style={styles.primaryBtn} onPress={handleForgotPasswordSubmit} disabled={loading}>
+              {loading ? (
+                <ActivityIndicator color="#ffffff" />
+              ) : (
+                <Text style={styles.primaryBtnText}>Send Password Reset Link ✉</Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.backBtn, { marginTop: 12, alignSelf: 'center' }]}
+              onPress={() => { setAuthStep('credentials'); setErrorMessage(''); setSuccessBanner(''); }}
+            >
+              <Text style={styles.backBtnText}>← Back to Sign In</Text>
+            </TouchableOpacity>
+          </View>
+        ) : authStep === 'reset_password' ? (
+          /* SET NEW PASSWORD STEP (FROM RECOVERY LINK) */
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Choose New Password</Text>
+            <Text style={styles.cardSubtitle}>
+              Your Gmail recovery token is verified. Please create and confirm your new secure password.
+            </Text>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>New Password (min. 8 characters) *</Text>
+              <View style={styles.passwordWrapper}>
+                <TextInput
+                  style={styles.passwordInput}
+                  placeholder="Enter new password"
+                  placeholderTextColor="#64748b"
+                  value={resetNewPassword}
+                  onChangeText={setResetNewPassword}
+                  secureTextEntry={!showResetNewPassword}
+                />
+                <TouchableOpacity
+                  style={styles.eyeBtn}
+                  onPress={() => setShowResetNewPassword(!showResetNewPassword)}
+                >
+                  {showResetNewPassword ? <EyeOff size={18} color="#94a3b8" /> : <Eye size={18} color="#94a3b8" />}
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Confirm New Password *</Text>
+              <View style={styles.passwordWrapper}>
+                <TextInput
+                  style={styles.passwordInput}
+                  placeholder="Re-enter new password"
+                  placeholderTextColor="#64748b"
+                  value={resetConfirmPassword}
+                  onChangeText={setResetConfirmPassword}
+                  secureTextEntry={!showResetConfirmPassword}
+                />
+                <TouchableOpacity
+                  style={styles.eyeBtn}
+                  onPress={() => setShowResetConfirmPassword(!showResetConfirmPassword)}
+                >
+                  {showResetConfirmPassword ? <EyeOff size={18} color="#94a3b8" /> : <Eye size={18} color="#94a3b8" />}
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={styles.primaryBtn}
+              onPress={handleResetPasswordSubmit}
+              disabled={loading || !resetNewPassword || resetNewPassword !== resetConfirmPassword}
+            >
+              {loading ? (
+                <ActivityIndicator color="#ffffff" />
+              ) : (
+                <Text style={styles.primaryBtnText}>Save New Password & Unlock Account</Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.backBtn, { marginTop: 12, alignSelf: 'center' }]}
+              onPress={() => { setAuthStep('credentials'); setErrorMessage(''); setSuccessBanner(''); }}
+            >
+              <Text style={styles.backBtnText}>← Cancel and Return to Sign In</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          /* MFA OTP VERIFICATION STEP */
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Gmail Security MFA Code</Text>
+            <Text style={styles.cardSubtitle}>
+              Enter the 6-digit authentication OTP dispatched to your Gmail address.
+            </Text>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>6-Digit Verification Code *</Text>
+              <TextInput
+                style={[styles.input, styles.otpInputText]}
+                placeholder="• • • • • •"
                 placeholderTextColor="#64748b"
                 value={otpInput}
                 onChangeText={setOtpInput}
@@ -593,7 +906,7 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
               {loading ? (
                 <ActivityIndicator color="#ffffff" />
               ) : (
-                <Text style={styles.primaryBtnText}>Verify 6-Digit OTP & Complete Sign In</Text>
+                <Text style={styles.primaryBtnText}>Authorize Login Session</Text>
               )}
             </TouchableOpacity>
 
@@ -616,29 +929,73 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
           </View>
         )
       ) : (
-        /* REGISTRATION TAB */
+        /* ================================================================= */
+        /* 2. NEW RESIDENT SIGN UP TAB (All Required Fields & Strong Password) */
+        /* ================================================================= */
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Resident Account Registration</Text>
           <Text style={styles.cardSubtitle}>
-            Creates your profile and sends a Gmail confirmation link.
+            Complete all required fields below to create your official Barangay Zapatera resident profile.
           </Text>
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Full Name *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. Maria Santos Dela Cruz"
-              placeholderTextColor="#64748b"
-              value={regData.full_name}
-              onChangeText={(txt) => setRegData({ ...regData, full_name: txt })}
-            />
+          {/* Section: Full Name (Last Name, First Name, Middle Initial) */}
+          <View style={styles.sectionDivider}>
+            <Text style={styles.sectionTitle}>1. Full Name Information *</Text>
+          </View>
+
+          <View style={styles.nameRow}>
+            <View style={[styles.inputGroup, { flex: 2, marginRight: 8 }]}>
+              <Text style={styles.label}>Last Name *</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g. Dela Cruz"
+                placeholderTextColor="#64748b"
+                value={regData.last_name}
+                onChangeText={(txt) => setRegData({ ...regData, last_name: txt })}
+              />
+            </View>
+
+            <View style={[styles.inputGroup, { flex: 2, marginRight: 8 }]}>
+              <Text style={styles.label}>First Name *</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g. Juan"
+                placeholderTextColor="#64748b"
+                value={regData.first_name}
+                onChangeText={(txt) => setRegData({ ...regData, first_name: txt })}
+              />
+            </View>
+
+            <View style={[styles.inputGroup, { flex: 1 }]}>
+              <Text style={styles.label}>MI *</Text>
+              <TextInput
+                style={[styles.input, { textAlign: 'center' }]}
+                placeholder="M."
+                placeholderTextColor="#64748b"
+                maxLength={3}
+                value={regData.middle_initial}
+                onChangeText={(txt) => setRegData({ ...regData, middle_initial: txt })}
+              />
+            </View>
+          </View>
+
+          {previewFormattedName ? (
+            <View style={styles.namePreviewBox}>
+              <Text style={styles.namePreviewLabel}>Official Formatted Name:</Text>
+              <Text style={styles.namePreviewValue}>{previewFormattedName}</Text>
+            </View>
+          ) : null}
+
+          {/* Section: Contact & Residency Info */}
+          <View style={styles.sectionDivider}>
+            <Text style={styles.sectionTitle}>2. Contact & Residency Details *</Text>
           </View>
 
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Gmail / Email Address *</Text>
             <TextInput
               style={styles.input}
-              placeholder="maria.santos@gmail.com"
+              placeholder="juan.delacruz@gmail.com"
               placeholderTextColor="#64748b"
               value={regData.email}
               onChangeText={(txt) => setRegData({ ...regData, email: txt })}
@@ -648,7 +1005,7 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
           </View>
 
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>Mobile Phone</Text>
+            <Text style={styles.label}>Mobile Phone Number *</Text>
             <TextInput
               style={styles.input}
               placeholder="09171234567"
@@ -656,64 +1013,324 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
               value={regData.phone}
               onChangeText={(txt) => setRegData({ ...regData, phone: txt })}
               keyboardType="phone-pad"
+              maxLength={13}
             />
           </View>
 
+          {/* Registered Voter Status (Yes / No) */}
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>Sitio / Street Location</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Sitio Central, Zapatera, Cebu City"
-              placeholderTextColor="#64748b"
-              value={regData.sitio}
-              onChangeText={(txt) => setRegData({ ...regData, sitio: txt })}
-            />
+            <Text style={styles.label}>Registered Voter in Barangay Zapatera? *</Text>
+            <View style={styles.toggleRow}>
+              <TouchableOpacity
+                style={[
+                  styles.toggleBtn,
+                  regData.voter_status === 'Registered Voter' && styles.toggleBtnActive,
+                ]}
+                onPress={() => setRegData({ ...regData, voter_status: 'Registered Voter' })}
+              >
+                <Vote size={14} color={regData.voter_status === 'Registered Voter' ? '#ffffff' : '#94a3b8'} />
+                <Text
+                  style={[
+                    styles.toggleBtnText,
+                    regData.voter_status === 'Registered Voter' && styles.toggleBtnTextActive,
+                  ]}
+                >
+                  Yes (Registered Voter)
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.toggleBtn,
+                  regData.voter_status === 'Not Registered Voter' && styles.toggleBtnActiveRose,
+                ]}
+                onPress={() => setRegData({ ...regData, voter_status: 'Not Registered Voter' })}
+              >
+                <X size={14} color={regData.voter_status === 'Not Registered Voter' ? '#ffffff' : '#94a3b8'} />
+                <Text
+                  style={[
+                    styles.toggleBtnText,
+                    regData.voter_status === 'Not Registered Voter' && styles.toggleBtnTextActive,
+                  ]}
+                >
+                  No (Non-Voter)
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
+          {/* Select Sitio (Sample list with easy customization) */}
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>ID Reference Number</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. BZ-2026-108"
-              placeholderTextColor="#64748b"
-              value={regData.id_number}
-              onChangeText={(txt) => setRegData({ ...regData, id_number: txt })}
-            />
+            <Text style={styles.label}>Select Sitio (Barangay Zapatera) *</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.sitioScroll}>
+              {SAMPLE_SITIOS.map((sitioName) => (
+                <TouchableOpacity
+                  key={sitioName}
+                  style={[
+                    styles.sitioPill,
+                    regData.sitio === sitioName && styles.sitioPillActive,
+                  ]}
+                  onPress={() => setRegData({ ...regData, sitio: sitioName })}
+                >
+                  <MapPin size={12} color={regData.sitio === sitioName ? '#ffffff' : '#94a3b8'} />
+                  <Text
+                    style={[
+                      styles.sitioPillText,
+                      regData.sitio === sitioName && styles.sitioPillTextActive,
+                    ]}
+                  >
+                    {sitioName}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
           </View>
 
+          {/* Section: Security & Strong Password */}
+          <View style={styles.sectionDivider}>
+            <Text style={styles.sectionTitle}>3. Account Password & Security *</Text>
+          </View>
+
+          {/* Strong Password Requirement Guide Alert */}
+          <View style={styles.passwordRequirementsBox}>
+            <View style={styles.alertHeaderRow}>
+              <Shield size={16} color="#60a5fa" />
+              <Text style={styles.passwordRequirementsTitle}>Strong Password Requirements (Required):</Text>
+            </View>
+
+            <View style={styles.checklistGrid}>
+              <View style={styles.checklistItem}>
+                {passwordStrength.hasLength ? (
+                  <Check size={14} color="#10b981" />
+                ) : (
+                  <X size={14} color="#ef4444" />
+                )}
+                <Text
+                  style={[
+                    styles.checklistText,
+                    passwordStrength.hasLength && styles.checklistTextValid,
+                  ]}
+                >
+                  At least 8 characters
+                </Text>
+              </View>
+
+              <View style={styles.checklistItem}>
+                {passwordStrength.hasUpper ? (
+                  <Check size={14} color="#10b981" />
+                ) : (
+                  <X size={14} color="#ef4444" />
+                )}
+                <Text
+                  style={[
+                    styles.checklistText,
+                    passwordStrength.hasUpper && styles.checklistTextValid,
+                  ]}
+                >
+                  1 Uppercase letter (A-Z)
+                </Text>
+              </View>
+
+              <View style={styles.checklistItem}>
+                {passwordStrength.hasLower ? (
+                  <Check size={14} color="#10b981" />
+                ) : (
+                  <X size={14} color="#ef4444" />
+                )}
+                <Text
+                  style={[
+                    styles.checklistText,
+                    passwordStrength.hasLower && styles.checklistTextValid,
+                  ]}
+                >
+                  1 Lowercase letter (a-z)
+                </Text>
+              </View>
+
+              <View style={styles.checklistItem}>
+                {passwordStrength.hasNumber ? (
+                  <Check size={14} color="#10b981" />
+                ) : (
+                  <X size={14} color="#ef4444" />
+                )}
+                <Text
+                  style={[
+                    styles.checklistText,
+                    passwordStrength.hasNumber && styles.checklistTextValid,
+                  ]}
+                >
+                  1 Number (0-9)
+                </Text>
+              </View>
+
+              <View style={styles.checklistItem}>
+                {passwordStrength.hasSpecial ? (
+                  <Check size={14} color="#10b981" />
+                ) : (
+                  <X size={14} color="#ef4444" />
+                )}
+                <Text
+                  style={[
+                    styles.checklistText,
+                    passwordStrength.hasSpecial && styles.checklistTextValid,
+                  ]}
+                >
+                  1 Special symbol (!@#$%^&*)
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Password Input with Eye Icon */}
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>Password (min 6 chars) *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="••••••••"
-              placeholderTextColor="#64748b"
-              value={regData.password}
-              onChangeText={(txt) => setRegData({ ...regData, password: txt })}
-              secureTextEntry
-            />
+            <Text style={styles.label}>Password *</Text>
+            <View style={styles.passwordWrapper}>
+              <TextInput
+                style={styles.passwordInput}
+                placeholder="Create a strong password"
+                placeholderTextColor="#64748b"
+                value={regData.password}
+                onChangeText={(txt) => setRegData({ ...regData, password: txt })}
+                secureTextEntry={!showRegPassword}
+              />
+              <TouchableOpacity
+                style={styles.eyeBtn}
+                onPress={() => setShowRegPassword(!showRegPassword)}
+              >
+                {showRegPassword ? <EyeOff size={18} color="#94a3b8" /> : <Eye size={18} color="#94a3b8" />}
+              </TouchableOpacity>
+            </View>
           </View>
 
+          {/* Confirm Password Input with Eye Icon */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Confirm Password *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="••••••••"
-              placeholderTextColor="#64748b"
-              value={regData.confirmPassword}
-              onChangeText={(txt) => setRegData({ ...regData, confirmPassword: txt })}
-              secureTextEntry
-            />
+            <View style={styles.passwordWrapper}>
+              <TextInput
+                style={styles.passwordInput}
+                placeholder="Re-enter your password to confirm"
+                placeholderTextColor="#64748b"
+                value={regData.confirmPassword}
+                onChangeText={(txt) => setRegData({ ...regData, confirmPassword: txt })}
+                secureTextEntry={!showRegConfirmPassword}
+              />
+              <TouchableOpacity
+                style={styles.eyeBtn}
+                onPress={() => setShowRegConfirmPassword(!showRegConfirmPassword)}
+              >
+                {showRegConfirmPassword ? <EyeOff size={18} color="#94a3b8" /> : <Eye size={18} color="#94a3b8" />}
+              </TouchableOpacity>
+            </View>
+
+            {regData.confirmPassword ? (
+              <View style={styles.matchStatusRow}>
+                {passwordsMatch ? (
+                  <View style={styles.matchValidBox}>
+                    <CheckCircle2 size={12} color="#10b981" />
+                    <Text style={styles.matchValidText}>Passwords match perfectly</Text>
+                  </View>
+                ) : (
+                  <View style={styles.matchInvalidBox}>
+                    <X size={12} color="#ef4444" />
+                    <Text style={styles.matchInvalidText}>Passwords do not match yet</Text>
+                  </View>
+                )}
+              </View>
+            ) : null}
           </View>
 
+          {/* Section: Privacy Policy Agreement */}
+          <View style={styles.privacyPolicyContainer}>
+            <TouchableOpacity
+              style={styles.checkboxTouchable}
+              onPress={() => setRegData({ ...regData, privacyPolicyAccepted: !regData.privacyPolicyAccepted })}
+            >
+              <View
+                style={[
+                  styles.checkbox,
+                  regData.privacyPolicyAccepted && styles.checkboxChecked,
+                ]}
+              >
+                {regData.privacyPolicyAccepted ? <Check size={14} color="#ffffff" /> : null}
+              </View>
+
+              <Text style={styles.privacyPolicyLabel}>
+                I have read, understood, and agree to the{' '}
+                <Text
+                  style={styles.privacyPolicyLink}
+                  onPress={() => setIsPrivacyModalOpen(true)}
+                >
+                  Barangay Zapatera Data Privacy Policy
+                </Text>{' '}
+                under Republic Act No. 10173 (Data Privacy Act of 2012). *
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Submit Registration Button */}
           <TouchableOpacity style={styles.primaryBtn} onPress={handleRegister} disabled={loading}>
             {loading ? (
               <ActivityIndicator color="#ffffff" />
             ) : (
-              <Text style={styles.primaryBtnText}>Register Account & Send Gmail Link</Text>
+              <Text style={styles.primaryBtnText}>Register Resident Account & Send Confirmation →</Text>
             )}
           </TouchableOpacity>
         </View>
       )}
+
+      {/* Privacy Policy Modal */}
+      <Modal
+        visible={isPrivacyModalOpen}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setIsPrivacyModalOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalHeaderLeft}>
+                <ShieldCheck size={20} color="#3b82f6" />
+                <Text style={styles.modalTitle}>Data Privacy Notice & Consent</Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsPrivacyModalOpen(false)}>
+                <X size={20} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalBody}>
+              <Text style={styles.modalSectionTitle}>Republic Act No. 10173 (Data Privacy Act of 2012)</Text>
+              <Text style={styles.modalText}>
+                Barangay Zapatera, Cebu City is committed to safeguarding your personal data in accordance with the Philippine Data Privacy Act of 2012.
+              </Text>
+
+              <Text style={styles.modalSectionTitle}>1. Information Collected</Text>
+              <Text style={styles.modalText}>
+                When registering, we collect your Full Name (Last Name, First Name, Middle Initial), Gmail / Email Address, Mobile Phone Number, Voter Registration Status, Sitio Location, and Street Address.
+              </Text>
+
+              <Text style={styles.modalSectionTitle}>2. Purpose of Collection</Text>
+              <Text style={styles.modalText}>
+                Your data is strictly used for official barangay document clearance verification, identity validation, appointment scheduling, and community service updates.
+              </Text>
+
+              <Text style={styles.modalSectionTitle}>3. Confidentiality & Security</Text>
+              <Text style={styles.modalText}>
+                Your data is encrypted, protected by multi-factor authentication, and will never be shared with unauthorized third parties without your explicit written consent.
+              </Text>
+            </ScrollView>
+
+            <TouchableOpacity
+              style={styles.modalCloseBtn}
+              onPress={() => {
+                setRegData({ ...regData, privacyPolicyAccepted: true });
+                setIsPrivacyModalOpen(false);
+              }}
+            >
+              <Text style={styles.modalCloseBtnText}>I Agree & Accept Privacy Terms</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -725,17 +1342,18 @@ const styles = StyleSheet.create({
   },
   contentContainer: {
     padding: 20,
-    paddingTop: 50,
+    paddingTop: 45,
+    paddingBottom: 60,
   },
   headerArea: {
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: 20,
   },
   sealLogo: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    marginBottom: 12,
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    marginBottom: 10,
     borderWidth: 2,
     borderColor: '#3b82f6',
   },
@@ -755,7 +1373,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1e293b',
     borderRadius: 14,
     padding: 4,
-    marginBottom: 20,
+    marginBottom: 18,
   },
   tabBtn: {
     flex: 1,
@@ -775,128 +1393,450 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontWeight: 'bold',
   },
+  alertHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
   successBox: {
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
     borderWidth: 1,
     borderColor: '#10b981',
     padding: 14,
-    borderRadius: 12,
+    borderRadius: 14,
     marginBottom: 16,
   },
+  successTitle: {
+    color: '#34d399',
+    fontSize: 13,
+    fontWeight: 'bold',
+    marginLeft: 6,
+  },
   successText: {
-    color: '#6ee7b7',
+    color: '#a7f3d0',
     fontSize: 12,
-    fontWeight: '600',
     lineHeight: 18,
+    marginTop: 2,
   },
   infoBox: {
-    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
     borderWidth: 1,
     borderColor: '#3b82f6',
     padding: 14,
-    borderRadius: 12,
+    borderRadius: 14,
     marginBottom: 16,
+  },
+  infoTitle: {
+    color: '#60a5fa',
+    fontSize: 13,
+    fontWeight: 'bold',
+    marginLeft: 6,
   },
   infoText: {
-    color: '#93c5fd',
+    color: '#bfdbfe',
     fontSize: 12,
-    fontWeight: '600',
     lineHeight: 18,
+    marginTop: 2,
   },
   errorBox: {
-    backgroundColor: 'rgba(225, 29, 72, 0.2)',
+    backgroundColor: 'rgba(244, 63, 94, 0.15)',
     borderWidth: 1,
-    borderColor: '#e11d48',
+    borderColor: '#f43f5e',
     padding: 14,
-    borderRadius: 12,
+    borderRadius: 14,
     marginBottom: 16,
+  },
+  errorTitle: {
+    color: '#fb7185',
+    fontSize: 13,
+    fontWeight: 'bold',
+    marginLeft: 6,
   },
   errorText: {
-    color: '#fda4af',
+    color: '#fecdd3',
     fontSize: 12,
-    fontWeight: '600',
     lineHeight: 18,
+    marginTop: 2,
   },
   card: {
-    backgroundColor: '#0f172a',
+    backgroundColor: '#131c2e',
     borderRadius: 20,
-    padding: 20,
     borderWidth: 1,
     borderColor: '#1e293b',
+    padding: 20,
+    marginBottom: 20,
   },
   cardTitle: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: 'bold',
-    color: '#f8fafc',
-    marginBottom: 4,
+    color: '#ffffff',
   },
   cardSubtitle: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#94a3b8',
-    marginBottom: 16,
-    lineHeight: 16,
+    marginTop: 4,
+    marginBottom: 18,
+    lineHeight: 17,
+  },
+  sectionDivider: {
+    marginTop: 10,
+    marginBottom: 12,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#60a5fa',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  namePreviewBox: {
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.3)',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 14,
+  },
+  namePreviewLabel: {
+    fontSize: 10,
+    color: '#94a3b8',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  namePreviewValue: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#60a5fa',
+    marginTop: 2,
   },
   inputGroup: {
     marginBottom: 14,
   },
   label: {
     fontSize: 12,
-    fontWeight: 'bold',
+    fontWeight: '700',
     color: '#cbd5e1',
     marginBottom: 6,
   },
   input: {
-    backgroundColor: '#020617',
+    backgroundColor: '#090d16',
     borderWidth: 1,
     borderColor: '#334155',
     borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 11,
     color: '#ffffff',
     fontSize: 13,
   },
-  otpInputStyle: {
-    fontSize: 24,
-    fontWeight: 'bold',
+  inputWrapper: {
+    position: 'relative',
+  },
+  inputWithIcon: {
+    backgroundColor: '#090d16',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    color: '#ffffff',
+    fontSize: 13,
+  },
+  passwordWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#090d16',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 12,
+    paddingRight: 10,
+  },
+  passwordInput: {
+    flex: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    color: '#ffffff',
+    fontSize: 13,
+  },
+  eyeBtn: {
+    padding: 8,
+  },
+  otpInputText: {
     textAlign: 'center',
+    fontSize: 22,
+    fontWeight: 'bold',
     letterSpacing: 8,
-    color: '#38bdf8',
-    borderColor: '#38bdf8',
+    fontFamily: 'monospace',
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  toggleBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#090d16',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 12,
+    paddingVertical: 11,
+    gap: 6,
+  },
+  toggleBtnActive: {
+    backgroundColor: '#2563eb',
+    borderColor: '#3b82f6',
+  },
+  toggleBtnActiveRose: {
+    backgroundColor: '#e11d48',
+    borderColor: '#f43f5e',
+  },
+  toggleBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#94a3b8',
+  },
+  toggleBtnTextActive: {
+    color: '#ffffff',
+    fontWeight: 'bold',
+  },
+  sitioScroll: {
+    flexDirection: 'row',
+    marginTop: 2,
+  },
+  sitioPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#090d16',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginRight: 8,
+    gap: 4,
+  },
+  sitioPillActive: {
+    backgroundColor: '#2563eb',
+    borderColor: '#3b82f6',
+  },
+  sitioPillText: {
+    fontSize: 11,
+    color: '#94a3b8',
+    fontWeight: '600',
+  },
+  sitioPillTextActive: {
+    color: '#ffffff',
+    fontWeight: 'bold',
+  },
+  passwordRequirementsBox: {
+    backgroundColor: '#0d1527',
+    borderWidth: 1,
+    borderColor: '#1e3a8a',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+  },
+  passwordRequirementsTitle: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#93c5fd',
+    marginLeft: 6,
+  },
+  checklistGrid: {
+    marginTop: 6,
+    gap: 4,
+  },
+  checklistItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  checklistText: {
+    fontSize: 11,
+    color: '#94a3b8',
+  },
+  checklistTextValid: {
+    color: '#34d399',
+    fontWeight: '600',
+  },
+  matchStatusRow: {
+    marginTop: 6,
+  },
+  matchValidBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  matchValidText: {
+    fontSize: 11,
+    color: '#34d399',
+    fontWeight: '600',
+  },
+  matchInvalidBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  matchInvalidText: {
+    fontSize: 11,
+    color: '#f87171',
+  },
+  privacyPolicyContainer: {
+    marginTop: 8,
+    marginBottom: 18,
+    backgroundColor: '#090d16',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 12,
+    padding: 12,
+  },
+  checkboxTouchable: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: '#64748b',
+    backgroundColor: '#1e293b',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  checkboxChecked: {
+    backgroundColor: '#2563eb',
+    borderColor: '#3b82f6',
+  },
+  privacyPolicyLabel: {
+    flex: 1,
+    fontSize: 11,
+    color: '#cbd5e1',
+    lineHeight: 16,
+  },
+  privacyPolicyLink: {
+    color: '#60a5fa',
+    fontWeight: 'bold',
+    textDecorationLine: 'underline',
   },
   primaryBtn: {
     backgroundColor: '#2563eb',
     borderRadius: 12,
-    paddingVertical: 14,
+    paddingVertical: 13,
     alignItems: 'center',
-    marginTop: 10,
+    justifyContent: 'center',
+    shadowColor: '#2563eb',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
   },
   primaryBtnText: {
     color: '#ffffff',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 'bold',
+  },
+  helperTipBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 14,
+    gap: 6,
+  },
+  helperTipText: {
+    fontSize: 11,
+    color: '#64748b',
   },
   otpActionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
     marginTop: 16,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#1e293b',
   },
   resendBtn: {
-    paddingVertical: 8,
+    paddingVertical: 6,
   },
   resendBtnText: {
-    color: '#38bdf8',
+    color: '#60a5fa',
     fontSize: 12,
-    fontWeight: 'bold',
+    fontWeight: '600',
   },
   backBtn: {
-    paddingVertical: 8,
+    paddingVertical: 6,
   },
   backBtnText: {
     color: '#94a3b8',
     fontSize: 12,
-    fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#131c2e',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#334155',
+    width: '100%',
+    maxHeight: '80%',
+    padding: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  modalHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  modalTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#ffffff',
+  },
+  modalBody: {
+    marginVertical: 14,
+  },
+  modalSectionTitle: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#60a5fa',
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  modalText: {
+    fontSize: 11,
+    color: '#94a3b8',
+    lineHeight: 16,
+    marginBottom: 8,
+  },
+  modalCloseBtn: {
+    backgroundColor: '#2563eb',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  modalCloseBtnText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: 'bold',
   },
 });

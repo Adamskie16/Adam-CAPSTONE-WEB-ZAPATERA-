@@ -9,6 +9,7 @@ import DocumentsView from './features/documents/DocumentsView';
 import EventsView from './features/events/EventsView';
 import ReportsView from './features/reports/ReportsView';
 import LogsView from './features/logs/LogsView';
+import UserManagementView from './features/users/UserManagementView';
 import AccountView from './features/account/AccountView';
 import AdminLoginPage from './features/auth/AdminLoginPage';
 import { StorageService } from './core/storage';
@@ -87,6 +88,7 @@ export default function App() {
     doc_info: 'Document Guidelines & Information',
     events: 'Barangay Events & Community Notices',
     reports: 'Operational Processing Reports',
+    users: 'User Account & Security Management',
     logs: 'Admin Action History Logs',
     account: 'Account Profile & Security Settings',
   };
@@ -158,6 +160,8 @@ export default function App() {
           )}
 
           {activeTab === 'reports' && <ReportsView requests={requests} />}
+
+          {activeTab === 'users' && <UserManagementView currentUser={currentUser} />}
 
           {activeTab === 'logs' && <LogsView logs={logs} />}
 

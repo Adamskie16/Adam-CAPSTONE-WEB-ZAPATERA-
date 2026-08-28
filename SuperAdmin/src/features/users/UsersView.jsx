@@ -17,14 +17,17 @@ import {
   MapPin,
   IdCard,
   Lock,
+  Unlock,
   Eye,
   EyeOff,
   AlertTriangle,
   Loader2,
+  ShieldCheck,
 } from 'lucide-react';
-import { validateEmail, sanitizeInput } from '../../core/security';
+import { validateEmail, sanitizeInput, unlockUserAccount, lockUserAccount, formatDate } from '../../core/security';
 import { supabase, supabaseAdmin, signUpUserWithoutPersistSession, isSupabaseConfigured } from '../../core/supabase';
 import { StorageService } from '../../core/storage';
+import { TableSkeleton } from '../../components/SkeletonLoader';
 
 export default function UsersView({ onSaveUser, onDeleteUser, currentUser, isDarkMode }) {
   const [usersList, setUsersList] = useState([]);
@@ -50,6 +53,15 @@ export default function UsersView({ onSaveUser, onDeleteUser, currentUser, isDar
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [deleteAuthError, setDeleteAuthError] = useState('');
   const [showDeletePassword, setShowDeletePassword] = useState(false);
+
+  // Dedicated Security Verification for Unlock / Lock Action
+  const [isSecurityActionModalOpen, setIsSecurityActionModalOpen] = useState(false);
+  const [securityActionType, setSecurityActionType] = useState('unlock');
+  const [securityActionTargetUser, setSecurityActionTargetUser] = useState(null);
+  const [securityActionPassword, setSecurityActionPassword] = useState('');
+  const [securityActionError, setSecurityActionError] = useState('');
+  const [showSecurityActionPassword, setShowSecurityActionPassword] = useState(false);
+  const [actionProcessing, setActionProcessing] = useState(false);
 
   // Processing Loading Overlay State
   const [isProcessing, setIsProcessing] = useState(false);
@@ -92,13 +104,37 @@ export default function UsersView({ onSaveUser, onDeleteUser, currentUser, isDar
     return false;
   }
 
-  // 1. FETCH ALL PROFILES DIRECTLY FROM SUPABASE
+  // 1. FETCH ALL PROFILES DIRECTLY FROM SUPABASE & REAL-TIME AUTO-REFRESH
   useEffect(() => {
-    fetchUsers();
+    fetchUsers(true);
+
+    // Auto-refresh every 3 seconds to catch lockout events live
+    const interval = setInterval(() => {
+      fetchUsers(false);
+    }, 3000);
+
+    const handleFocus = () => fetchUsers(false);
+    window.addEventListener('focus', handleFocus);
+
+    let channel = null;
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      channel = new BroadcastChannel('zapatera_security_channel');
+      channel.onmessage = (event) => {
+        if (event.data?.type === 'ACCOUNT_LOCKED' || event.data?.type === 'ACCOUNT_UNLOCKED') {
+          fetchUsers(false);
+        }
+      };
+    }
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+      if (channel) channel.close();
+    };
   }, []);
 
-  async function fetchUsers() {
-    setLoadingUsers(true);
+  async function fetchUsers(showLoading = false) {
+    if (showLoading) setLoadingUsers(true);
 
     try {
       if (isSupabaseConfigured()) {
@@ -107,8 +143,44 @@ export default function UsersView({ onSaveUser, onDeleteUser, currentUser, isDar
           .select('*')
           .order('created_at', { ascending: false });
 
+        // Also fetch pending unlock requests to guarantee real-time locked status across all origins
+        const { data: unlockRequests } = await supabase
+          .from('account_unlock_requests')
+          .select('*')
+          .eq('status', 'pending');
+
+        const lockedEmailMap = new Map();
+        if (unlockRequests) {
+          unlockRequests.forEach((req) => {
+            if (req.email) {
+              lockedEmailMap.set(req.email.toLowerCase(), req);
+            }
+          });
+        }
+
         if (!error && supaProfiles) {
-          setUsersList(supaProfiles);
+          const seenEmails = new Set();
+          const uniqueProfiles = [];
+
+          for (const p of supaProfiles) {
+            const cleanEmail = (p.email || '').toLowerCase().trim();
+            if (!cleanEmail || seenEmails.has(cleanEmail)) continue;
+            seenEmails.add(cleanEmail);
+
+            const hasPendingUnlock = lockedEmailMap.has(cleanEmail);
+            const isLocked = p.is_locked || (p.failed_attempts || 0) >= 3 || p.is_active === false || hasPendingUnlock;
+
+            uniqueProfiles.push({
+              ...p,
+              email: cleanEmail,
+              is_locked: isLocked,
+              is_active: !isLocked,
+              failed_attempts: isLocked ? Math.max(p.failed_attempts || 0, 3) : (p.failed_attempts || 0),
+              locked_at: p.locked_at || (hasPendingUnlock ? lockedEmailMap.get(cleanEmail)?.locked_at : null),
+            });
+          }
+
+          setUsersList(uniqueProfiles);
           setLoadingUsers(false);
           return;
         }
@@ -384,6 +456,56 @@ export default function UsersView({ onSaveUser, onDeleteUser, currentUser, isDar
     setIsModalOpen(true);
   };
 
+  const handleUnlockUser = (user) => {
+    setSecurityActionTargetUser(user);
+    setSecurityActionType('unlock');
+    setSecurityActionPassword('');
+    setSecurityActionError('');
+    setShowSecurityActionPassword(false);
+    setIsSecurityActionModalOpen(true);
+  };
+
+  const handleLockUser = (user) => {
+    setSecurityActionTargetUser(user);
+    setSecurityActionType('lock');
+    setSecurityActionPassword('');
+    setSecurityActionError('');
+    setShowSecurityActionPassword(false);
+    setIsSecurityActionModalOpen(true);
+  };
+
+  const handleExecuteSecurityAction = async () => {
+    if (!securityActionPassword.trim() || !securityActionTargetUser) return;
+    setSecurityActionError('');
+
+    const isValid = await verifyLoggedInPassword(securityActionPassword);
+    if (!isValid) {
+      setSecurityActionError('Security Authorization Failed: Incorrect administrator password.');
+      return;
+    }
+
+    setActionProcessing(true);
+    const targetEmail = securityActionTargetUser.email;
+    const adminEmail = currentUser?.email || 'superadmin@zapatera.gov.ph';
+
+    try {
+      if (securityActionType === 'unlock') {
+        await unlockUserAccount(targetEmail, adminEmail);
+      } else {
+        await lockUserAccount(targetEmail, adminEmail, 'SuperAdmin Manual Lockout');
+      }
+
+      await fetchUsers();
+    } catch (err) {
+      console.warn('Security action error:', err);
+    } finally {
+      setActionProcessing(false);
+      setIsSecurityActionModalOpen(false);
+      setSecurityActionTargetUser(null);
+      setSecurityActionPassword('');
+    }
+  };
+
   const toggleUserStatus = async (user) => {
     const updatedStatus = !user.is_active;
     try {
@@ -404,7 +526,14 @@ export default function UsersView({ onSaveUser, onDeleteUser, currentUser, isDar
   };
 
   const filteredUsers = usersList.filter((u) => {
-    const matchesRole = filterRole === 'all' || u.role === filterRole;
+    const isLocked = u.is_locked || (u.failed_attempts || 0) >= 3 || u.is_active === false || (typeof localStorage !== 'undefined' && localStorage.getItem(`zapatera_locked_${u.email}`) === 'true');
+    const matchesRole =
+      filterRole === 'all'
+        ? true
+        : filterRole === 'locked'
+        ? isLocked
+        : u.role === filterRole;
+
     const matchesSearch =
       u.full_name?.toLowerCase().includes(search.toLowerCase()) ||
       u.email?.toLowerCase().includes(search.toLowerCase()) ||
@@ -437,18 +566,29 @@ export default function UsersView({ onSaveUser, onDeleteUser, currentUser, isDar
         isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-slate-200 text-slate-900'
       }`}>
         <div>
-          <h2 className="text-xl font-bold">User Account Management</h2>
+          <h2 className="text-xl font-bold">User Account Management & Security</h2>
           <p className={`text-xs mt-1 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-            Provision and control access credentials for Barangay Staff (Admins) and Residents.
+            Provision credentials, monitor 3-attempt account lockouts, and authorize unlock actions for Barangay Staff & Residents.
           </p>
         </div>
-        <button
-          onClick={openCreateModal}
-          className="inline-flex items-center space-x-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-900/20 transition-colors shrink-0 cursor-pointer"
-        >
-          <UserPlus className="w-4 h-4" />
-          <span>Provision New Account</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={fetchUsers}
+            className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center space-x-1 transition-colors cursor-pointer ${
+              isDarkMode ? 'border-slate-800 hover:bg-slate-800 text-slate-300' : 'border-slate-200 hover:bg-slate-100 text-slate-700'
+            }`}
+            title="Refresh Account Data"
+          >
+            <Loader2 className={`w-4 h-4 ${loadingUsers ? 'animate-spin' : ''}`} />
+          </button>
+          <button
+            onClick={openCreateModal}
+            className="inline-flex items-center space-x-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-900/20 transition-colors shrink-0 cursor-pointer"
+          >
+            <UserPlus className="w-4 h-4" />
+            <span>Provision New Account</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter Bar */}
@@ -456,19 +596,25 @@ export default function UsersView({ onSaveUser, onDeleteUser, currentUser, isDar
         isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
       }`}>
         <div className="flex items-center space-x-2 w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0">
-          {['all', 'super_admin', 'admin', 'resident'].map((r) => (
+          {[
+            { id: 'all', label: 'All' },
+            { id: 'super_admin', label: 'Super Admin' },
+            { id: 'admin', label: 'Admin' },
+            { id: 'resident', label: 'Resident' },
+            { id: 'locked', label: 'Locked Out (3 Failures)' },
+          ].map((r) => (
             <button
-              key={r}
-              onClick={() => setFilterRole(r)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-colors cursor-pointer ${
-                filterRole === r
+              key={r.id}
+              onClick={() => setFilterRole(r.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wider transition-colors cursor-pointer ${
+                filterRole === r.id
                   ? 'bg-blue-600 text-white shadow-xs'
                   : isDarkMode
                   ? 'text-slate-400 hover:bg-slate-800'
                   : 'text-slate-600 hover:bg-slate-100'
               }`}
             >
-              {r.replace('_', ' ')}
+              {r.label}
             </button>
           ))}
         </div>
@@ -503,18 +649,13 @@ export default function UsersView({ onSaveUser, onDeleteUser, currentUser, isDar
                 <th className="px-6 py-3.5">User Identity</th>
                 <th className="px-6 py-3.5">Role</th>
                 <th className="px-6 py-3.5">Contact & Location</th>
-                <th className="px-6 py-3.5">Account Status</th>
+                <th className="px-6 py-3.5">Security & Lock Status</th>
                 <th className="px-6 py-3.5 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium">
               {loadingUsers ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-12 text-center text-slate-400">
-                    <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-blue-500" />
-                    <span>Loading accounts from database...</span>
-                  </td>
-                </tr>
+                <TableSkeleton rows={6} cols={5} isDarkMode={isDarkMode} />
               ) : filteredUsers.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-6 py-12 text-center text-slate-400">
@@ -522,73 +663,103 @@ export default function UsersView({ onSaveUser, onDeleteUser, currentUser, isDar
                   </td>
                 </tr>
               ) : (
-                filteredUsers.map((u) => (
-                  <tr key={u.id || u.email} className={`hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors ${
-                    isDarkMode ? 'text-slate-200' : 'text-slate-700'
-                  }`}>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center space-x-3">
-                        <div className={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-xs ${
-                          u.role === 'super_admin'
-                            ? 'bg-purple-100 text-purple-700 border border-purple-200'
-                            : u.role === 'admin'
-                            ? 'bg-blue-100 text-blue-700 border border-blue-200'
-                            : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
-                        }`}>
-                          {(u.full_name || u.email || 'U').charAt(0).toUpperCase()}
+                filteredUsers.map((u) => {
+                  const isLocked = u.is_locked || (u.failed_attempts || 0) >= 3 || u.is_active === false || (typeof localStorage !== 'undefined' && localStorage.getItem(`zapatera_locked_${u.email}`) === 'true');
+                  const failedCount = isLocked ? Math.max(u.failed_attempts || 0, 3) : (u.failed_attempts || 0);
+
+                  return (
+                    <tr key={u.id || u.email} className={`hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors ${
+                      isDarkMode ? 'text-slate-200' : 'text-slate-700'
+                    }`}>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center space-x-3">
+                          <div className={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-xs ${
+                            u.role === 'super_admin'
+                              ? 'bg-purple-100 text-purple-700 border border-purple-200'
+                              : u.role === 'admin'
+                              ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                              : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                          }`}>
+                            {(u.full_name || u.email || 'U').charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <p className="font-bold text-slate-900 dark:text-white">{u.full_name || 'Unnamed Account'}</p>
+                            <p className="text-[11px] text-slate-500 font-mono">{u.email}</p>
+                          </div>
                         </div>
-                        <div>
-                          <p className="font-bold text-slate-900 dark:text-white">{u.full_name || 'Unnamed Account'}</p>
-                          <p className="text-[11px] text-slate-500 font-mono">{u.email}</p>
+                      </td>
+
+                      <td className="px-6 py-4">
+                        <Badge variant={u.role === 'super_admin' ? 'purple' : u.role === 'admin' ? 'blue' : 'active'}>
+                          {u.role === 'super_admin' ? 'Super Admin' : u.role === 'admin' ? 'Barangay Admin' : 'Resident'}
+                        </Badge>
+                      </td>
+
+                      <td className="px-6 py-4 space-y-0.5 text-[11px]">
+                        <p className="text-slate-600 dark:text-slate-300">{u.phone || 'No phone registered'}</p>
+                        <p className="text-slate-400 truncate max-w-xs">{u.address || 'Barangay Zapatera, Cebu City'}</p>
+                      </td>
+
+                      <td className="px-6 py-4">
+                        {isLocked ? (
+                          <div className="flex flex-col space-y-1">
+                            <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800">
+                              <Lock className="w-3 h-3" />
+                              <span>Locked ({failedCount}/3 Failed)</span>
+                            </span>
+                            {u.locked_at && (
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                {formatDate(u.locked_at)}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800">
+                            <CheckCircle className="w-3.5 h-3.5" />
+                            <span>Active (Secure)</span>
+                          </span>
+                        )}
+                      </td>
+
+                      <td className="px-6 py-4 text-right">
+                        <div className="flex items-center justify-end space-x-2">
+                          {isLocked ? (
+                            <button
+                              onClick={() => handleUnlockUser(u)}
+                              className="inline-flex items-center space-x-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
+                              title="Unlock Account"
+                            >
+                              <Unlock className="w-3.5 h-3.5" />
+                              <span>Unlock Account</span>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleLockUser(u)}
+                              className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                              title="Lock Account"
+                            >
+                              <Lock className="w-4 h-4" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleEdit(u)}
+                            className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                            title="Edit Account Credentials"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => confirmDelete(u)}
+                            className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                            title="Delete Account"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
-                      </div>
-                    </td>
-
-                    <td className="px-6 py-4">
-                      <Badge variant={u.role === 'super_admin' ? 'purple' : u.role === 'admin' ? 'blue' : 'active'}>
-                        {u.role === 'super_admin' ? 'Super Admin' : u.role === 'admin' ? 'Barangay Admin' : 'Resident'}
-                      </Badge>
-                    </td>
-
-                    <td className="px-6 py-4 space-y-0.5 text-[11px]">
-                      <p className="text-slate-600 dark:text-slate-300">{u.phone || 'No phone registered'}</p>
-                      <p className="text-slate-400 truncate max-w-xs">{u.address || 'Barangay Zapatera, Cebu City'}</p>
-                    </td>
-
-                    <td className="px-6 py-4">
-                      <button
-                        onClick={() => toggleUserStatus(u)}
-                        className={`inline-flex items-center space-x-1 px-2.5 py-1 rounded-full text-[11px] font-semibold transition-colors cursor-pointer ${
-                          u.is_active !== false
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
-                            : 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
-                        }`}
-                      >
-                        {u.is_active !== false ? <CheckCircle className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
-                        <span>{u.is_active !== false ? 'Active' : 'Locked'}</span>
-                      </button>
-                    </td>
-
-                    <td className="px-6 py-4 text-right">
-                      <div className="flex items-center justify-end space-x-2">
-                        <button
-                          onClick={() => handleEdit(u)}
-                          className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
-                          title="Edit Account Credentials"
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => confirmDelete(u)}
-                          className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
-                          title="Delete Account"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -773,6 +944,117 @@ export default function UsersView({ onSaveUser, onDeleteUser, currentUser, isDar
               >
                 {deleting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                 <span>Authorize & Delete</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Dedicated Security Verification - Unlock / Lock Account Modal */}
+      <Modal
+        isOpen={isSecurityActionModalOpen}
+        onClose={() => {
+          setIsSecurityActionModalOpen(false);
+          setSecurityActionPassword('');
+          setSecurityActionError('');
+          setSecurityActionTargetUser(null);
+        }}
+        title={`Security Verification - ${securityActionType === 'unlock' ? 'Unlock Account' : 'Lock Account'}`}
+        darkMode={isDarkMode}
+      >
+        {securityActionTargetUser && (
+          <div className="space-y-4 text-xs">
+            <div className={`p-4 rounded-xl border flex items-start space-x-3 ${
+              securityActionType === 'unlock'
+                ? isDarkMode ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                : isDarkMode ? 'bg-rose-950/30 border-rose-800/60 text-rose-300' : 'bg-rose-50 border-rose-200 text-rose-800'
+            }`}>
+              <ShieldCheck className="w-5 h-5 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-sm">
+                  {securityActionType === 'unlock' ? 'Authorize Account Unlock' : 'Authorize Account Lockout'}
+                </p>
+                <p className="text-xs opacity-90 mt-1">
+                  You are requesting to {securityActionType === 'unlock' ? 'unlock' : 'lock'} the account for{' '}
+                  <strong className={isDarkMode ? 'text-white' : 'text-slate-900'}>{securityActionTargetUser.full_name || 'User'}</strong> (
+                  <span className="font-mono">{securityActionTargetUser.email}</span>).
+                  Please verify your logged-in administrator password to authorize this action.
+                </p>
+              </div>
+            </div>
+
+            {securityActionError && (
+              <div className="p-3 bg-red-950/80 border border-red-800 text-red-200 rounded-xl flex items-center space-x-2 font-medium">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+                <span>{securityActionError}</span>
+              </div>
+            )}
+
+            <div className={`p-3.5 rounded-xl border space-y-2 ${
+              isDarkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-50 border-slate-200'
+            }`}>
+              <label className={`block font-bold text-xs flex items-center ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                <Lock className="w-3.5 h-3.5 mr-1" /> Logged-in Administrator Password (Required)
+              </label>
+              <div className="relative">
+                <input
+                  type={showSecurityActionPassword ? 'text' : 'password'}
+                  required
+                  autoFocus
+                  value={securityActionPassword}
+                  onChange={(e) => {
+                    setSecurityActionPassword(e.target.value);
+                    setSecurityActionError('');
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && securityActionPassword.trim()) {
+                      e.preventDefault();
+                      handleExecuteSecurityAction();
+                    }
+                  }}
+                  placeholder="Enter your administrator password"
+                  className={`w-full pl-3 pr-10 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 font-mono text-xs ${
+                    isDarkMode ? 'bg-slate-950 border-slate-800 text-white' : 'bg-white border-slate-300 text-slate-900'
+                  }`}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowSecurityActionPassword(!showSecurityActionPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                >
+                  {showSecurityActionPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-end space-x-3">
+              <button
+                type="button"
+                disabled={actionProcessing}
+                onClick={() => {
+                  setIsSecurityActionModalOpen(false);
+                  setSecurityActionPassword('');
+                  setSecurityActionError('');
+                  setSecurityActionTargetUser(null);
+                }}
+                className={`px-4 py-2 font-medium rounded-lg cursor-pointer ${
+                  isDarkMode ? 'text-slate-400 hover:text-white hover:bg-slate-800' : 'text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={actionProcessing || !securityActionPassword.trim()}
+                onClick={handleExecuteSecurityAction}
+                className={`px-4 py-2 font-semibold text-white rounded-lg shadow-md disabled:opacity-50 flex items-center space-x-2 cursor-pointer ${
+                  securityActionType === 'unlock'
+                    ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-900/20'
+                    : 'bg-rose-600 hover:bg-rose-500 shadow-rose-900/20'
+                }`}
+              >
+                {actionProcessing && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{securityActionType === 'unlock' ? 'Authorize & Unlock' : 'Authorize & Lock'}</span>
               </button>
             </div>
           </div>

@@ -15,7 +15,7 @@ import {
   HelpCircle,
   Loader2,
 } from 'lucide-react';
-import { validateEmail } from '../../core/security';
+import { validateEmail, checkRateLimit, isAccountLocked, recordFailedAttempt, resetFailedAttempts } from '../../core/security';
 import { supabase, isSupabaseConfigured } from '../../core/supabase';
 import { ResidentUser } from '../../types';
 
@@ -27,7 +27,7 @@ interface LoginModalProps {
 }
 
 export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginModalProps) {
-  const [step, setStep] = useState(1); // 1: Credentials, 2: MFA OTP, 3: Forgot Password
+  const [step, setStep] = useState(1); // 1: Credentials, 2: MFA OTP, 3: Forgot Password, 4: Set New Password
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -38,12 +38,46 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
   const [forgotSuccess, setForgotSuccess] = useState('');
   const [forgotError, setForgotError] = useState('');
 
+  // Reset Password State (After clicking Gmail recovery link)
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
+  const [showResetNewPassword, setShowResetNewPassword] = useState(false);
+  const [showResetConfirmPassword, setShowResetConfirmPassword] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState('');
+  const [resetError, setResetError] = useState('');
+
   const [otpInput, setOtpInput] = useState('');
   const [pendingUser, setPendingUser] = useState<ResidentUser | null>(null);
   const [loading, setLoading] = useState(false);
 
   const [error, setError] = useState('');
   const [infoMsg, setInfoMsg] = useState('');
+
+  useEffect(() => {
+    // Detect password recovery redirect
+    const hash = typeof window !== 'undefined' ? window.location.hash : '';
+    const search = typeof window !== 'undefined' ? window.location.search : '';
+    const isRecovery =
+      hash.includes('type=recovery') ||
+      search.includes('type=recovery') ||
+      hash.includes('access_token');
+
+    if (isRecovery) {
+      setStep(4);
+      setInfoMsg('Password Recovery Active: Please enter and confirm your new resident password.');
+    }
+
+    if (isSupabaseConfigured()) {
+      const { data: authListener } = supabase.auth.onAuthStateChange((event) => {
+        if (event === 'PASSWORD_RECOVERY') {
+          setStep(4);
+          setInfoMsg('Password Recovery Active: Please enter and confirm your new resident password.');
+        }
+      });
+      return () => authListener?.subscription?.unsubscribe();
+    }
+  }, []);
 
   const handleStep1Submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,14 +91,31 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
       return;
     }
 
-    let foundUser: ResidentUser | null = null;
+    const cleanEmail = email.trim().toLowerCase();
 
+    // 0. Server-Side Rate Limiting Check
+    const rateLimit = await checkRateLimit(cleanEmail);
+    if (!rateLimit.allowed) {
+      setError(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
+      setLoading(false);
+      return;
+    }
+
+    // 0.1 Check if Account is Already Locked
+    const locked = await isAccountLocked(cleanEmail);
+    if (locked) {
+      setError('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Zapatera administration to unlock your account.');
+      setLoading(false);
+      return;
+    }
+
+    let foundUser: ResidentUser | null = null;
     try {
       if (isSupabaseConfigured()) {
         const { data, error: dbErr } = await supabase
           .from('profiles')
           .select('*')
-          .eq('email', email.trim().toLowerCase())
+          .eq('email', cleanEmail)
           .maybeSingle();
 
         if (data && !dbErr) foundUser = data as ResidentUser;
@@ -73,28 +124,25 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
       console.warn('Supabase fetch notice:', err);
     }
 
-    if (!foundUser) {
-      setError('Invalid credentials. Account not found.');
+    // Check Password Validation if present
+    if (!foundUser || (foundUser.password && foundUser.password !== password)) {
+      const lockRes = await recordFailedAttempt(cleanEmail, 'resident');
+      if (lockRes.isLockedOut || lockRes.attempts >= 3) {
+        setError('ACCOUNT LOCKED OUT: You have exceeded 3 failed login attempts. Your account has been locked for security. Please contact Barangay Zapatera administration to request an unlock.');
+      } else {
+        setError(`Invalid credentials. Warning: Failed attempt ${lockRes.attempts} of 3 before account lockout!`);
+      }
       setLoading(false);
       return;
     }
 
-    if (foundUser.is_locked || !foundUser.is_active || (foundUser.failed_attempts || 0) >= 3) {
-      setError('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Hall to unlock.');
-      setLoading(false);
-      return;
-    }
-
-    if (foundUser.password && foundUser.password !== password) {
-      setError('Invalid password. Please check your credentials and try again.');
-      setLoading(false);
-      return;
-    }
+    // Password valid -> Reset failed attempts
+    await resetFailedAttempts(cleanEmail);
 
     try {
       if (isSupabaseConfigured()) {
         await supabase.auth.signInWithOtp({
-          email: email.trim().toLowerCase(),
+          email: cleanEmail,
         });
       }
     } catch (err) {
@@ -203,6 +251,67 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
     setForgotSuccess(`Password reset instructions sent to ${cleanEmail}. Check your Gmail Inbox and click the reset link.`);
   };
 
+  // Handle Setting New Password after recovery link verification
+  const handleResetPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setResetError('');
+    setResetSuccess('');
+
+    if (resetNewPassword.length < 8) {
+      setResetError('Password must be at least 8 characters long.');
+      return;
+    }
+
+    if (resetNewPassword !== resetConfirmPassword) {
+      setResetError('Passwords do not match. Please ensure both fields match.');
+      return;
+    }
+
+    setResetLoading(true);
+
+    try {
+      if (isSupabaseConfigured()) {
+        const { data, error: updateErr } = await supabase.auth.updateUser({
+          password: resetNewPassword,
+        });
+
+        if (updateErr) {
+          console.warn('Supabase updateUser notice:', updateErr.message);
+        }
+
+        const targetEmail = (data?.user?.email || forgotEmail || email || '').toLowerCase().trim();
+
+        if (targetEmail) {
+          await supabase
+            .from('profiles')
+            .update({
+              password: resetNewPassword,
+              is_locked: false,
+              failed_attempts: 0,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('email', targetEmail);
+        }
+      }
+
+      if (typeof window !== 'undefined') {
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+
+      setResetSuccess('Your password has been successfully updated in the database! Redirecting to login...');
+      setTimeout(() => {
+        setStep(1);
+        setResetSuccess('');
+        setPassword('');
+        setInfoMsg('Password reset successful! Please log in with your new password.');
+      }, 2000);
+    } catch (err) {
+      setResetError('Failed to update password. Please try requesting a new reset link.');
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Resident Account Sign In" maxWidth="max-w-md" darkMode={true}>
       <div className="space-y-4 text-xs font-sans text-slate-100">
@@ -239,11 +348,11 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
 
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="font-semibold text-slate-300">Password</label>
+                <label className="block font-semibold text-slate-300">Account Password</label>
                 <button
                   type="button"
-                  onClick={() => { setForgotEmail(email); setError(''); setStep(3); }}
-                  className="text-blue-400 hover:text-blue-300 transition-colors font-medium text-[11px]"
+                  onClick={() => { setStep(3); setError(''); setInfoMsg(''); }}
+                  className="text-blue-400 hover:text-blue-300 text-[11px] font-medium transition-colors cursor-pointer"
                 >
                   Forgot password?
                 </button>
@@ -255,116 +364,87 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:ring-2 focus:ring-blue-500"
+                  placeholder="Enter resident password"
+                  className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:ring-2 focus:ring-blue-500 font-mono"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors cursor-pointer"
-                  title={showPassword ? 'Hide Password' : 'Show Password'}
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
             </div>
 
-            <div className="pt-4 border-t border-slate-800 flex items-center justify-end space-x-3">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-all cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={loading}
-                className="px-5 py-2 font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed rounded-xl shadow-lg shadow-blue-600/30 flex items-center space-x-1.5 transition-all cursor-pointer"
-              >
-                {loading ? <span>Sending OTP…</span> : (
-                  <>
-                    <span>Continue to MFA OTP</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </>
-                )}
-              </button>
-            </div>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-2.5 font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-60 rounded-xl shadow-lg shadow-blue-600/30 flex items-center justify-center space-x-1.5 transition-all cursor-pointer"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Verify Credentials & Send OTP</span>}
+              {!loading && <ArrowRight className="w-4 h-4" />}
+            </button>
           </form>
         )}
 
         {step === 2 && (
           <form onSubmit={handleStep2Submit} className="space-y-4">
-            <div className="p-3.5 bg-gradient-to-r from-blue-950 to-slate-950 text-white rounded-xl space-y-2 border border-blue-500/30 shadow-lg">
-              <div className="flex items-center justify-between text-[11px] font-bold text-blue-300 border-b border-blue-900/80 pb-1.5">
-                <span className="flex items-center space-x-1">
-                  <Mail className="w-3.5 h-3.5 text-blue-400" />
-                  <span>Barangay Resident Mailer</span>
-                </span>
-                <span className="text-[10px] text-emerald-400 font-mono">✉ OTP Sent to Gmail</span>
+            <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-1">
+              <div className="flex justify-between items-center text-slate-300 font-mono text-[11px]">
+                <span>Recipient:</span>
+                <span className="text-blue-400 font-bold">{email}</span>
               </div>
-              <p className="text-[11px] text-slate-300">To: <span className="font-mono text-white font-bold">{pendingUser?.email}</span></p>
-              <p className="text-[10px] text-slate-400 leading-relaxed">
-                Open your Gmail inbox (check Spam/Junk too). Enter the 6-digit code from the Supabase verification email.
+              <p className="text-[10px] text-slate-400">
+                A 6-digit OTP code was sent to your Gmail inbox. Please enter it below.
               </p>
             </div>
 
             <div>
-              <label className="block font-semibold text-slate-300 mb-1.5">Enter 6-Digit OTP Code</label>
+              <label className="block text-slate-300 font-semibold mb-1.5">6-Digit Verification Code</label>
               <div className="relative">
                 <KeyRound className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
                 <input
                   type="text"
                   maxLength={6}
                   required
+                  autoFocus
                   value={otpInput}
                   onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
-                  placeholder="123456"
-                  className="w-full pl-10 pr-3.5 py-3 bg-slate-950 border border-slate-800 text-white rounded-xl focus:ring-2 focus:ring-blue-500 font-mono text-center text-lg tracking-widest font-bold"
+                  placeholder="• • • • • •"
+                  className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl text-center tracking-[0.5em] font-mono text-base font-bold focus:ring-2 focus:ring-blue-500"
                 />
               </div>
             </div>
 
-            <div className="flex items-center justify-between pt-1">
+            <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
               <button
                 type="button"
-                onClick={() => setStep(1)}
+                onClick={() => { setStep(1); setOtpInput(''); setError(''); }}
                 className="text-slate-400 hover:text-white transition-colors cursor-pointer"
               >
                 ← Back
               </button>
+
               <button
                 type="button"
                 onClick={handleResendOTP}
                 disabled={loading}
-                className="text-blue-400 hover:text-blue-300 font-semibold flex items-center space-x-1 transition-colors disabled:opacity-50 cursor-pointer"
+                className="text-blue-400 hover:text-blue-300 flex items-center space-x-1 font-semibold disabled:opacity-50 cursor-pointer"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
+                <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
                 <span>Resend OTP</span>
               </button>
             </div>
 
-            <div className="pt-4 border-t border-slate-800 flex items-center justify-end space-x-3">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-all cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={loading}
-                className="px-5 py-2 font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed rounded-xl shadow-lg shadow-blue-600/30 flex items-center space-x-1.5 transition-all cursor-pointer"
-              >
-                {loading ? <span>Verifying…</span> : (
-                  <>
-                    <ShieldCheck className="w-4 h-4" />
-                    <span>Verify & Sign In</span>
-                  </>
-                )}
-              </button>
-            </div>
+            <button
+              type="submit"
+              disabled={loading || otpInput.length !== 6}
+              className="w-full py-2.5 font-semibold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 rounded-xl shadow-lg shadow-emerald-600/30 flex items-center justify-center space-x-1.5 transition-all cursor-pointer"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+              <span>Verify OTP & Sign In</span>
+            </button>
           </form>
         )}
 
@@ -426,6 +506,98 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
                 <span>Send Reset Link</span>
               </button>
             </div>
+          </form>
+        )}
+
+        {/* STEP 4: SET NEW PASSWORD (RECOVERY MODE) */}
+        {step === 4 && (
+          <form onSubmit={handleResetPasswordSubmit} className="space-y-4">
+            <div className="p-3.5 bg-emerald-950/40 border border-emerald-800/60 rounded-xl space-y-1.5">
+              <div className="flex items-center space-x-2 text-emerald-300 font-bold">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                <span>Choose New Resident Password</span>
+              </div>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                Your recovery link has been verified. Please create and confirm your new secure password.
+              </p>
+            </div>
+
+            {resetError && (
+              <div className="p-3 bg-rose-950/80 border border-rose-800 text-rose-200 rounded-xl font-medium">
+                {resetError}
+              </div>
+            )}
+
+            {resetSuccess && (
+              <div className="p-3 bg-emerald-950/80 border border-emerald-800 text-emerald-200 rounded-xl font-medium">
+                {resetSuccess}
+              </div>
+            )}
+
+            <div>
+              <label className="block text-slate-300 font-semibold mb-1.5">New Password *</label>
+              <div className="relative">
+                <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  type={showResetNewPassword ? 'text' : 'password'}
+                  required
+                  value={resetNewPassword}
+                  onChange={(e) => setResetNewPassword(e.target.value)}
+                  placeholder="Enter new password (min. 8 characters)"
+                  className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowResetNewPassword(!showResetNewPassword)}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                >
+                  {showResetNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-slate-300 font-semibold mb-1.5">Confirm New Password *</label>
+              <div className="relative">
+                <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  type={showResetConfirmPassword ? 'text' : 'password'}
+                  required
+                  value={resetConfirmPassword}
+                  onChange={(e) => setResetConfirmPassword(e.target.value)}
+                  placeholder="Re-enter new password"
+                  className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowResetConfirmPassword(!showResetConfirmPassword)}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                >
+                  {showResetConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            {resetConfirmPassword && (
+              <div className="text-[10px]">
+                {resetNewPassword === resetConfirmPassword ? (
+                  <span className="text-emerald-400 flex items-center space-x-1">
+                    <CheckCircle2 className="w-3 h-3" /> <span>Passwords match</span>
+                  </span>
+                ) : (
+                  <span className="text-rose-400">Passwords do not match</span>
+                )}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={resetLoading || !resetNewPassword || resetNewPassword !== resetConfirmPassword}
+              className="w-full py-2.5 font-semibold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 rounded-xl shadow-lg shadow-emerald-600/30 flex items-center justify-center space-x-1.5 transition-all cursor-pointer"
+            >
+              {resetLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+              <span>Save New Password & Unlock Account</span>
+            </button>
           </form>
         )}
       </div>

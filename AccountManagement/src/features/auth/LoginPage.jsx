@@ -1,7 +1,7 @@
 // AccountManagement/src/features/auth/LoginPage.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase, isSupabaseConfigured } from '../../core/supabase';
-import { validateEmail } from '../../core/security';
+import { validateEmail, checkRateLimit, isAccountLocked, recordFailedAttempt, resetFailedAttempts } from '../../core/security';
 import {
   ShieldCheck,
   Lock,
@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 
 export default function LoginPage({ onLoginSuccess }) {
-  const [step, setStep] = useState(1); // 1: Credentials, 2: MFA OTP, 3: Forgot Password
+  const [step, setStep] = useState(1); // 1: Credentials, 2: MFA OTP, 3: Forgot Password, 4: Set New Password
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -29,6 +29,15 @@ export default function LoginPage({ onLoginSuccess }) {
   const [forgotSuccess, setForgotSuccess] = useState('');
   const [forgotError, setForgotError] = useState('');
 
+  // Reset Password State (After clicking Gmail recovery link)
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
+  const [showResetNewPassword, setShowResetNewPassword] = useState(false);
+  const [showResetConfirmPassword, setShowResetConfirmPassword] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState('');
+  const [resetError, setResetError] = useState('');
+
   const [otpInput, setOtpInput] = useState('');
   const [pendingUser, setPendingUser] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -37,6 +46,44 @@ export default function LoginPage({ onLoginSuccess }) {
 
   const [error, setError] = useState('');
   const [infoMsg, setInfoMsg] = useState('');
+
+  useEffect(() => {
+    // 1. Detect if redirected from password reset email link
+    const hash = typeof window !== 'undefined' ? window.location.hash : '';
+    const search = typeof window !== 'undefined' ? window.location.search : '';
+    const isRecovery =
+      hash.includes('type=recovery') ||
+      search.includes('type=recovery') ||
+      hash.includes('access_token');
+
+    if (isRecovery) {
+      setStep(4);
+      setInfoMsg('Password Recovery Active: Please enter your new Account Management password below.');
+    }
+
+    if (isSupabaseConfigured()) {
+      const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+        if (event === 'PASSWORD_RECOVERY') {
+          setStep(4);
+          setInfoMsg('Password Recovery Active: Please enter your new Account Management password below.');
+        }
+      });
+      return () => authListener?.subscription?.unsubscribe();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      const channel = new BroadcastChannel('zapatera_security_channel');
+      channel.onmessage = (event) => {
+        if (event.data?.type === 'ACCOUNT_UNLOCKED' && event.data?.email === email.toLowerCase().trim()) {
+          setError('');
+          setInfoMsg('Account has been unlocked by administrator. You may now log in.');
+        }
+      };
+      return () => channel.close();
+    }
+  }, [email]);
 
   const handleStep1Submit = async (e) => {
     e.preventDefault();
@@ -51,70 +98,89 @@ export default function LoginPage({ onLoginSuccess }) {
     }
 
     const cleanEmail = email.trim().toLowerCase();
-    let authenticatedUser = null;
-    let authError = null;
 
-    // 1. Authenticate using Supabase Auth signInWithPassword
-    try {
-      if (isSupabaseConfigured()) {
-        const { data, error: signInErr } = await supabase.auth.signInWithPassword({
-          email: cleanEmail,
-          password: password,
-        });
-
-        if (signInErr) {
-          authError = signInErr.message;
-        } else if (data?.user) {
-          const userMeta = data.user.user_metadata || {};
-          const metaRole = (userMeta.role || userMeta.user_role || 'admin').toLowerCase();
-          const normalizedRole = metaRole === 'superadmin' ? 'super_admin' : metaRole;
-
-          authenticatedUser = {
-            id: data.user.id,
-            email: data.user.email || cleanEmail,
-            full_name: userMeta.full_name || userMeta.display_name || userMeta.name || cleanEmail.split('@')[0],
-            role: normalizedRole,
-            phone: userMeta.phone || '',
-            address: userMeta.address || 'Barangay Zapatera, Cebu City',
-            id_type: userMeta.id_type || 'Government ID',
-            id_number: userMeta.id_number || '',
-            is_active: true,
-          };
-        }
-      }
-    } catch (err) {
-      console.warn('Supabase Auth exception:', err);
-    }
-
-    // 2. Query super_admins table if auth not completed yet
-    if (!authenticatedUser) {
-      try {
-        const { data, error: dbErr } = await supabase
-          .from('super_admins')
-          .select('*')
-          .eq('email', cleanEmail)
-          .maybeSingle();
-
-        if (data && !dbErr) {
-          if (data.password && data.password !== password) {
-            setError('Invalid password credential.');
-            setLoading(false);
-            return;
-          }
-          authenticatedUser = data;
-        }
-      } catch (err) {
-        console.warn('super_admins fetch notice:', err);
-      }
-    }
-
-    if (!authenticatedUser) {
-      setError(authError || 'Invalid email or password credentials. Account not found.');
+    // 0. Server-Side Rate Limiting Check
+    const rateLimit = await checkRateLimit(cleanEmail);
+    if (!rateLimit.allowed) {
+      setError(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
       setLoading(false);
       return;
     }
 
-    // 3. Verify Role Authorization: Strictly Super Admin permitted
+    // 0.1 Check if Account is Already Locked
+    const locked = await isAccountLocked(cleanEmail);
+    if (locked) {
+      setError('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact an administrator to unlock your account.');
+      setLoading(false);
+      return;
+    }
+
+    let authenticatedUser = null;
+
+    // 1. Verify credentials from public.profiles table first
+    try {
+      if (isSupabaseConfigured()) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('email', cleanEmail)
+          .maybeSingle();
+
+        if (profile) {
+          const pRole = (profile.role || '').toLowerCase();
+          if (pRole === 'super_admin' || pRole === 'superadmin') {
+            if (profile.password && profile.password === password) {
+              authenticatedUser = {
+                id: profile.id,
+                email: profile.email,
+                full_name: profile.full_name || cleanEmail.split('@')[0],
+                role: 'super_admin',
+                password: profile.password,
+                phone: profile.phone || '',
+                address: profile.address || 'Barangay Zapatera, Cebu City',
+                id_type: profile.id_type || 'Government ID',
+                id_number: profile.id_number || '',
+                is_active: true,
+              };
+            }
+          }
+        }
+      }
+    } catch (e) {}
+
+    // 2. Check super_admins table if not matched in profiles
+    if (!authenticatedUser) {
+      try {
+        if (isSupabaseConfigured()) {
+          const { data: adminData } = await supabase
+            .from('super_admins')
+            .select('*')
+            .eq('email', cleanEmail)
+            .maybeSingle();
+
+          if (adminData && adminData.password === password) {
+            authenticatedUser = { ...adminData, role: 'super_admin', is_active: true };
+          }
+        }
+      } catch (e) {}
+    }
+
+    // 3. Handle Failed Login Attempt if user wasn't authenticated
+    if (!authenticatedUser) {
+      const lockRes = await recordFailedAttempt(cleanEmail, 'super_admin');
+      if (lockRes.isLockedOut || lockRes.attempts >= 3) {
+        setError('ACCOUNT LOCKED OUT: You have exceeded 3 failed login attempts. Your account has been locked for security. Please contact an administrator to request an unlock.');
+      } else {
+        setError(`Invalid credentials. Warning: Failed attempt ${lockRes.attempts} of 3 before account lockout!`);
+      }
+      setLoading(false);
+      return;
+    }
+
+    // Successful Login -> Reset Failed Attempts Counter
+    await resetFailedAttempts(cleanEmail);
+
+    // 5. Verify Role Authorization: Strictly Super Admin permitted
     if (authenticatedUser.role !== 'super_admin') {
       setError('Access Restricted: Only Super Admin accounts are authorized to access the Account Management Portal.');
       setLoading(false);
@@ -270,9 +336,69 @@ export default function LoginPage({ onLoginSuccess }) {
     } catch (err) {
       console.warn('Password reset notice:', err);
     }
-
     setForgotLoading(false);
     setForgotSuccess(`Password reset instructions sent to ${cleanEmail}. Check your Gmail Inbox and click the reset link.`);
+  };
+
+  // Handle Setting New Password after recovery link verification
+  const handleResetPasswordSubmit = async (e) => {
+    e.preventDefault();
+    setResetError('');
+    setResetSuccess('');
+
+    if (resetNewPassword.length < 8) {
+      setResetError('Password must be at least 8 characters long.');
+      return;
+    }
+
+    if (resetNewPassword !== resetConfirmPassword) {
+      setResetError('Passwords do not match. Please ensure both fields match.');
+      return;
+    }
+
+    setResetLoading(true);
+
+    try {
+      if (isSupabaseConfigured()) {
+        const { data, error: updateErr } = await supabase.auth.updateUser({
+          password: resetNewPassword,
+        });
+
+        if (updateErr) {
+          console.warn('Supabase updateUser notice:', updateErr.message);
+        }
+
+        const targetEmail = (data?.user?.email || forgotEmail || email || '').toLowerCase().trim();
+
+        if (targetEmail) {
+          await supabase
+            .from('profiles')
+            .update({
+              password: resetNewPassword,
+              is_locked: false,
+              failed_attempts: 0,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('email', targetEmail);
+        }
+      }
+
+      if (typeof window !== 'undefined') {
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+
+      setResetSuccess('Your password has been successfully updated in the database! Redirecting to login...');
+      setTimeout(() => {
+        setStep(1);
+        setResetSuccess('');
+        setPassword('');
+        setInfoMsg('Password reset successful! Please log in with your new password.');
+      }, 2000);
+    } catch (err) {
+      setResetError('Failed to update password. Please try requesting a new reset link.');
+    } finally {
+      setResetLoading(false);
+    }
   };
 
   return (
@@ -287,7 +413,7 @@ export default function LoginPage({ onLoginSuccess }) {
           <h1 className="text-xl font-bold text-white tracking-wide">Barangay Zapatera</h1>
           <p className="text-xs text-blue-400 font-semibold mt-1">User Account Management & Provisioning Portal</p>
           
-          {step !== 3 && (
+          {step !== 3 && step !== 4 && (
             <div className="mt-4 flex items-center justify-center space-x-2 text-[11px]">
               <span className={`px-2.5 py-1 rounded-full font-semibold border ${step === 1 ? 'bg-blue-600/30 text-blue-300 border-blue-500/40' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
                 1. Password Auth
@@ -526,6 +652,98 @@ export default function LoginPage({ onLoginSuccess }) {
                   <span>Send Reset Link</span>
                 </button>
               </div>
+            </form>
+          )}
+
+          {/* STEP 4: SET NEW PASSWORD (RECOVERY MODE) */}
+          {step === 4 && (
+            <form onSubmit={handleResetPasswordSubmit} className="space-y-4 text-xs">
+              <div className="p-4 bg-emerald-950/40 border border-emerald-800/60 rounded-xl space-y-1.5">
+                <div className="flex items-center space-x-2 text-emerald-300 font-bold">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <span>Choose New Account Management Password</span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  Your recovery link has been verified. Please create and confirm your new secure password.
+                </p>
+              </div>
+
+              {resetError && (
+                <div className="p-3 bg-rose-950/80 border border-rose-800 text-rose-200 rounded-xl font-medium">
+                  {resetError}
+                </div>
+              )}
+
+              {resetSuccess && (
+                <div className="p-3 bg-emerald-950/80 border border-emerald-800 text-emerald-200 rounded-xl font-medium">
+                  {resetSuccess}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1.5">New Password *</label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type={showResetNewPassword ? 'text' : 'password'}
+                    required
+                    value={resetNewPassword}
+                    onChange={(e) => setResetNewPassword(e.target.value)}
+                    placeholder="Enter new password (min. 8 characters)"
+                    className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetNewPassword(!showResetNewPassword)}
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                  >
+                    {showResetNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1.5">Confirm New Password *</label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type={showResetConfirmPassword ? 'text' : 'password'}
+                    required
+                    value={resetConfirmPassword}
+                    onChange={(e) => setResetConfirmPassword(e.target.value)}
+                    placeholder="Re-enter new password"
+                    className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetConfirmPassword(!showResetConfirmPassword)}
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                  >
+                    {showResetConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              {resetConfirmPassword && (
+                <div className="text-[10px]">
+                  {resetNewPassword === resetConfirmPassword ? (
+                    <span className="text-emerald-400 flex items-center space-x-1">
+                      <CheckCircle2 className="w-3 h-3" /> <span>Passwords match</span>
+                    </span>
+                  ) : (
+                    <span className="text-rose-400">Passwords do not match</span>
+                  )}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={resetLoading || !resetNewPassword || resetNewPassword !== resetConfirmPassword}
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
+              >
+                {resetLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                <span>Save New Password & Unlock Account</span>
+              </button>
             </form>
           )}
         </div>

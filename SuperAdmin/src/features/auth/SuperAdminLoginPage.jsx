@@ -1,8 +1,8 @@
 // SuperAdmin/src/features/auth/SuperAdminLoginPage.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StorageService } from '../../core/storage';
 import { supabase, isSupabaseConfigured } from '../../core/supabase';
-import { validateEmail } from '../../core/security';
+import { validateEmail, checkRateLimit, isAccountLocked, recordFailedAttempt, resetFailedAttempts } from '../../core/security';
 import {
   ShieldCheck,
   Lock,
@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 
 export default function SuperAdminLoginPage({ onLoginSuccess }) {
-  const [step, setStep] = useState(1); // 1: Password Auth, 2: MFA OTP, 3: Forgot Password
+  const [step, setStep] = useState(1); // 1: Password Auth, 2: MFA OTP, 3: Forgot Password, 4: Set New Password
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -30,6 +30,15 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
   const [forgotSuccess, setForgotSuccess] = useState('');
   const [forgotError, setForgotError] = useState('');
 
+  // Reset Password State (After clicking Gmail recovery link)
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
+  const [showResetNewPassword, setShowResetNewPassword] = useState(false);
+  const [showResetConfirmPassword, setShowResetConfirmPassword] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState('');
+  const [resetError, setResetError] = useState('');
+
   const [otpInput, setOtpInput] = useState('');
   const [pendingUser, setPendingUser] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -39,6 +48,44 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
   const [error, setError] = useState('');
   const [infoMsg, setInfoMsg] = useState('');
   const [attempts, setAttempts] = useState(0);
+
+  useEffect(() => {
+    // 1. Detect if redirected from password reset email link
+    const hash = typeof window !== 'undefined' ? window.location.hash : '';
+    const search = typeof window !== 'undefined' ? window.location.search : '';
+    const isRecovery =
+      hash.includes('type=recovery') ||
+      search.includes('type=recovery') ||
+      hash.includes('access_token');
+
+    if (isRecovery) {
+      setStep(4);
+      setInfoMsg('Password Recovery Active: Please enter your new Super Admin password below.');
+    }
+
+    if (isSupabaseConfigured()) {
+      const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+        if (event === 'PASSWORD_RECOVERY') {
+          setStep(4);
+          setInfoMsg('Password Recovery Active: Please enter your new Super Admin password below.');
+        }
+      });
+      return () => authListener?.subscription?.unsubscribe();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      const channel = new BroadcastChannel('zapatera_security_channel');
+      channel.onmessage = (event) => {
+        if (event.data?.type === 'ACCOUNT_UNLOCKED' && event.data?.email === email.toLowerCase().trim()) {
+          setError('');
+          setInfoMsg('Account has been unlocked by administrator. You may now log in.');
+        }
+      };
+      return () => channel.close();
+    }
+  }, [email]);
 
   const handleStep1Submit = async (e) => {
     e.preventDefault();
@@ -53,127 +100,83 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
     }
 
     const cleanEmail = email.trim().toLowerCase();
-    let foundUser = null;
-    let authNoticeMessage = '';
 
-    // 1. Authenticate via Supabase Auth (auth.users)
-    try {
-      if (isSupabaseConfigured()) {
-        const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
-          email: cleanEmail,
-          password: password,
-        });
-
-        if (authErr) {
-          if (authErr.message.includes('Email not confirmed')) {
-            setError('Email Not Confirmed: Please check your Gmail inbox and click the confirmation link before logging in.');
-            setLoading(false);
-            return;
-          } else {
-            authNoticeMessage = authErr.message;
-          }
-        }
-
-        if (authData?.user) {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', authData.user.id)
-            .maybeSingle();
-
-          const userMeta = authData.user.user_metadata || {};
-          const metaRole = (profile?.role || userMeta.role || userMeta.user_role || 'super_admin').toLowerCase();
-          const normalizedRole = metaRole === 'superadmin' ? 'super_admin' : metaRole;
-
-          if (normalizedRole !== 'super_admin') {
-            setError('Access Denied: This portal is strictly restricted to Super Admin accounts.');
-            setLoading(false);
-            return;
-          }
-
-          foundUser = {
-            id: authData.user.id,
-            email: authData.user.email || cleanEmail,
-            full_name: profile?.full_name || userMeta.full_name || userMeta.display_name || cleanEmail.split('@')[0],
-            role: 'super_admin',
-            phone: profile?.phone || userMeta.phone || '',
-            address: profile?.address || userMeta.address || '',
-            is_active: profile?.is_active !== false,
-            failed_attempts: 0,
-            is_locked: false,
-          };
-        }
-      }
-    } catch (err) {
-      console.warn('Supabase Auth signIn notice:', err);
+    // 0. Server-Side Rate Limiting Check
+    const rateLimit = await checkRateLimit(cleanEmail);
+    if (!rateLimit.allowed) {
+      setError(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
+      setLoading(false);
+      return;
     }
 
-    // 2. Query public.profiles table filtering specifically for super_admin role
-    if (!foundUser) {
-      try {
-        const { data, error: dbErr } = await supabase
+    // 0.1 Check if Account is Already Locked
+    const locked = await isAccountLocked(cleanEmail);
+    if (locked) {
+      setError('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact an administrator to unlock your account.');
+      setLoading(false);
+      return;
+    }
+
+    let foundUser = null;
+
+    // 1. Verify credentials from public.profiles table first
+    try {
+      if (isSupabaseConfigured()) {
+        const { data: profile } = await supabase
           .from('profiles')
           .select('*')
           .eq('email', cleanEmail)
           .maybeSingle();
 
-        if (data && !dbErr) {
-          const pRole = (data.role || '').toLowerCase();
+        if (profile) {
+          const pRole = (profile.role || '').toLowerCase();
           if (pRole === 'super_admin' || pRole === 'superadmin') {
-            foundUser = {
-              id: data.id,
-              email: data.email,
-              full_name: data.full_name || cleanEmail.split('@')[0],
-              role: 'super_admin',
-              password: data.password,
-              phone: data.phone || '',
-              address: data.address || '',
-              is_active: data.is_active !== false,
-              failed_attempts: 0,
-              is_locked: false,
-            };
+            if (profile.password && profile.password === password) {
+              foundUser = {
+                id: profile.id,
+                email: profile.email,
+                full_name: profile.full_name || cleanEmail.split('@')[0],
+                role: 'super_admin',
+                password: profile.password,
+                phone: profile.phone || '',
+                address: profile.address || '',
+                is_active: true,
+                failed_attempts: 0,
+                is_locked: false,
+              };
+            }
           }
         }
-      } catch (err) {
-        console.warn('Supabase profiles fetch notice:', err);
+      }
+    } catch (e) {}
+
+    // 2. Check local seed admins if not found in profiles
+    if (!foundUser) {
+      const localAdmins = StorageService.getSuperAdmins ? StorageService.getSuperAdmins() : (StorageService.getAdmins ? StorageService.getAdmins() : []);
+      const localMatch = localAdmins.find(
+        (a) => a.email?.toLowerCase() === cleanEmail && a.password === password
+      );
+      if (localMatch) {
+        foundUser = { ...localMatch, role: 'super_admin', is_active: true };
       }
     }
 
-    // 3. Storage fallback if offline or not in Supabase profiles yet
+    // 3. Handle Failed Login Attempt if user wasn't authenticated
     if (!foundUser) {
-      const users = StorageService.getUsers();
-      foundUser = users.find((u) => u.email.toLowerCase() === cleanEmail && (u.role === 'super_admin' || u.role === 'superadmin')) || null;
-    }
-
-    if (!foundUser) {
-      setError(authNoticeMessage || 'Account not found or invalid credentials. Please check your email and password.');
-      setLoading(false);
-      return;
-    }
-
-    // 4. Check if account is locked out or inactive
-    if (foundUser.is_locked || !foundUser.is_active || (foundUser.failed_attempts || 0) >= 3) {
-      setError('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact system administrator to unlock.');
-      setLoading(false);
-      return;
-    }
-
-    // 5. Verify Password if present on user record and not verified by Supabase Auth
-    if (foundUser.password && foundUser.password !== password) {
-      const updatedUser = StorageService.recordFailedAttempt(cleanEmail);
-      const failedCount = updatedUser ? updatedUser.failed_attempts : (attempts + 1);
-      setAttempts(failedCount);
-
-      if (failedCount >= 3 || (updatedUser && updatedUser.is_locked)) {
-        setError('ACCOUNT LOCKED OUT: You have exceeded 3 failed login attempts. Your account has been locked for security.');
+      const lockRes = await recordFailedAttempt(cleanEmail, 'super_admin');
+      if (lockRes.isLockedOut || lockRes.attempts >= 3) {
+        setError('ACCOUNT LOCKED OUT: You have exceeded 3 failed login attempts. Your account has been locked for security. Please contact an administrator to request an unlock.');
       } else {
-        setError(`Invalid credentials. Warning: Failed attempt ${failedCount} of 3 before account lockout!`);
+        setError(`Invalid credentials. Warning: Failed attempt ${lockRes.attempts} of 3 before account lockout!`);
       }
       setLoading(false);
       return;
     }
 
-    // 6. Generate local OTP fallback + try Supabase OTP email
+    // Successful Login -> Reset Failed Attempts Counter
+    await resetFailedAttempts(cleanEmail);
+
+    // 5. Generate local OTP fallback + try Supabase OTP email
     const localOtp = StorageService.generateOTP(cleanEmail);
     setDevOtp(localOtp);
 
@@ -188,7 +191,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
           setStep(2);
           setEmailSent(true);
           setDevOtp('');
-          setInfoMsg(`MFA Required: A 6-digit verification code has been sent to ${cleanEmail}. Please check your Gmail inbox.`);
+          setInfoMsg(`MFA Required: A 6-digit verification code has been dispatched to ${cleanEmail}. Please check your Gmail inbox.`);
         } else {
           setPendingUser(foundUser);
           setStep(2);
@@ -201,7 +204,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
         setEmailSent(false);
         setInfoMsg(`A 6-digit Verification Code (${localOtp}) has been generated for ${cleanEmail}. Enter code ${localOtp} (or testing code 123456) below.`);
       }
-    } catch (err) {
+    } catch (e) {
       setPendingUser(foundUser);
       setStep(2);
       setEmailSent(false);
@@ -318,9 +321,69 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
     } catch (err) {
       console.warn('Password reset notice:', err);
     }
-
     setForgotLoading(false);
     setForgotSuccess(`Password reset instructions sent to ${cleanEmail}. Check your Gmail Inbox and click the reset link.`);
+  };
+
+  // Handle Setting New Password after recovery link verification
+  const handleResetPasswordSubmit = async (e) => {
+    e.preventDefault();
+    setResetError('');
+    setResetSuccess('');
+
+    if (resetNewPassword.length < 8) {
+      setResetError('Password must be at least 8 characters long.');
+      return;
+    }
+
+    if (resetNewPassword !== resetConfirmPassword) {
+      setResetError('Passwords do not match. Please ensure both fields match.');
+      return;
+    }
+
+    setResetLoading(true);
+
+    try {
+      if (isSupabaseConfigured()) {
+        const { data, error: updateErr } = await supabase.auth.updateUser({
+          password: resetNewPassword,
+        });
+
+        if (updateErr) {
+          console.warn('Supabase updateUser notice:', updateErr.message);
+        }
+
+        const targetEmail = (data?.user?.email || forgotEmail || email || '').toLowerCase().trim();
+
+        if (targetEmail) {
+          await supabase
+            .from('profiles')
+            .update({
+              password: resetNewPassword,
+              is_locked: false,
+              failed_attempts: 0,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('email', targetEmail);
+        }
+      }
+
+      if (typeof window !== 'undefined') {
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+
+      setResetSuccess('Your password has been successfully updated in the database! Redirecting to login...');
+      setTimeout(() => {
+        setStep(1);
+        setResetSuccess('');
+        setPassword('');
+        setInfoMsg('Password reset successful! Please log in with your new password.');
+      }, 2000);
+    } catch (err) {
+      setResetError('Failed to update password. Please try requesting a new reset link.');
+    } finally {
+      setResetLoading(false);
+    }
   };
 
   return (
@@ -343,7 +406,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-950 text-indigo-400 border border-indigo-800/80">Super Admin</span>
           </div>
 
-          {step !== 3 && (
+          {step !== 3 && step !== 4 && (
             <div className="mt-4 flex items-center justify-center space-x-2 text-[11px]">
               <span className={`px-2.5 py-1 rounded-full font-semibold border ${step === 1 ? 'bg-blue-600/30 text-blue-300 border-blue-500/40' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
                 1. Password Auth
@@ -386,7 +449,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="superadmin@zapatera.gov.ph"
+                    placeholder="sample@gmail.com"
                     className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
                   />
                 </div>
@@ -394,11 +457,11 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
 
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-slate-300 font-semibold">Security Password</label>
+                  <label className="text-slate-300 font-semibold">Account Password</label>
                   <button
                     type="button"
-                    onClick={() => { setForgotEmail(email); setError(''); setStep(3); }}
-                    className="text-blue-400 hover:text-blue-300 transition-colors font-medium text-[11px]"
+                    onClick={() => { setStep(3); setError(''); setInfoMsg(''); }}
+                    className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors cursor-pointer"
                   >
                     Forgot password?
                   </button>
@@ -410,14 +473,13 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
                     required
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                    placeholder="Enter executive password"
+                    className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors cursor-pointer"
-                    title={showPassword ? 'Hide Password' : 'Show Password'}
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
                   >
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -427,67 +489,41 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-xl shadow-lg shadow-blue-600/30 transition-all flex items-center justify-center space-x-2 text-xs cursor-pointer"
+                className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl shadow-lg shadow-blue-600/30 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
               >
-                {loading ? (
-                  <span>Sending OTP to your email…</span>
-                ) : (
-                  <>
-                    <span>Authenticate Credentials</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </>
-                )}
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Authorize Super Admin Credentials</span>}
+                {!loading && <ArrowRight className="w-4 h-4" />}
               </button>
             </form>
           )}
 
-          {/* STEP 2: MFA EMAIL OTP */}
+          {/* STEP 2: MFA OTP VERIFICATION */}
           {step === 2 && (
             <form onSubmit={handleStep2Submit} className="space-y-4 text-xs">
-              {emailSent ? (
-                <div className="p-4 bg-gradient-to-r from-blue-950 to-slate-950 border border-blue-500/40 rounded-xl space-y-2 shadow-lg">
-                  <div className="flex items-center justify-between text-[11px] font-bold text-blue-300 border-b border-blue-900/60 pb-1.5">
-                    <span className="flex items-center space-x-1.5">
-                      <Mail className="w-3.5 h-3.5 text-blue-400" />
-                      <span>Barangay Official Mail Server</span>
-                    </span>
-                    <span className="text-[10px] text-emerald-400 font-mono">✉ OTP Sent to Gmail</span>
-                  </div>
-                  <p className="text-[11px] text-slate-300">
-                    OTP dispatched to: <span className="font-mono text-white font-semibold">{pendingUser?.email}</span>
-                  </p>
-                  <p className="text-[10px] text-slate-400 leading-relaxed">
-                    Open your Gmail inbox (check Spam/Junk too). Enter the 6-digit code from the Supabase verification email.
-                  </p>
+              <div className="p-4 bg-slate-950/70 border border-slate-800/80 rounded-xl space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 font-medium">Authorizing Executive:</span>
+                  <span className="text-blue-400 font-mono font-bold">{pendingUser?.full_name}</span>
                 </div>
-              ) : (
-                <div className="p-4 bg-gradient-to-r from-amber-950 to-slate-950 border border-amber-500/40 rounded-xl space-y-2 shadow-lg">
-                  <div className="flex items-center justify-between text-[11px] font-bold text-amber-300 border-b border-amber-900/60 pb-1.5">
-                    <span className="flex items-center space-x-1.5">
-                      <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Email Unavailable — Temporary OTP Code</span>
-                    </span>
-                    <span className="text-[10px] text-amber-400 font-mono">Dev Fallback</span>
-                  </div>
-                  <p className="text-[10px] text-slate-400">Email service is not configured yet. Use this temporary code:</p>
-                  <div className="bg-slate-950 border border-amber-500/30 p-3 rounded-lg text-center">
-                    <span className="text-2xl font-mono font-bold tracking-widest text-amber-300">{devOtp}</span>
-                  </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 font-medium">OTP Destination:</span>
+                  <span className="text-slate-300 font-mono">{email}</span>
                 </div>
-              )}
+              </div>
 
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Enter 6-Digit OTP Code</label>
+                <label className="block text-slate-300 font-semibold mb-1.5">Enter 6-Digit Verification Code</label>
                 <div className="relative">
                   <KeyRound className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
                   <input
                     type="text"
                     maxLength={6}
                     required
+                    autoFocus
                     value={otpInput}
                     onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
-                    placeholder="123456"
-                    className="w-full pl-10 pr-3.5 py-3 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent font-mono text-center text-lg tracking-widest font-bold"
+                    placeholder="• • • • • •"
+                    className="w-full pl-10 pr-3.5 py-3 bg-slate-950 border border-slate-800 text-white rounded-xl text-center tracking-[0.5em] font-mono text-base font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
               </div>
@@ -495,36 +531,30 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
               <div className="flex items-center justify-between pt-1">
                 <button
                   type="button"
-                  onClick={() => { setStep(1); setError(''); setInfoMsg(''); }}
-                  className="text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  onClick={handleResendOTP}
+                  disabled={loading}
+                  className="text-blue-400 hover:text-blue-300 flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
                 >
-                  ← Back to Login
+                  <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                  <span>Resend Code</span>
                 </button>
 
                 <button
                   type="button"
-                  onClick={handleResendOTP}
-                  disabled={loading}
-                  className="text-blue-400 hover:text-blue-300 flex items-center space-x-1 font-semibold disabled:opacity-50 cursor-pointer"
+                  onClick={() => { setStep(1); setOtpInput(''); setError(''); }}
+                  className="text-slate-400 hover:text-white transition-colors cursor-pointer"
                 >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Resend OTP</span>
+                  Cancel
                 </button>
               </div>
 
               <button
                 type="submit"
-                disabled={loading}
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center space-x-2 text-xs cursor-pointer"
+                disabled={loading || otpInput.length !== 6}
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
               >
-                {loading ? (
-                  <span>Verifying OTP…</span>
-                ) : (
-                  <>
-                    <ShieldCheck className="w-4 h-4" />
-                    <span>Verify MFA & Enter Super Admin</span>
-                  </>
-                )}
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                <span>Verify MFA & Grant Access</span>
               </button>
             </form>
           )}
@@ -538,7 +568,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
                   <span>Reset Super Admin Password</span>
                 </div>
                 <p className="text-[11px] text-slate-300 leading-relaxed">
-                  Enter your registered Super Admin email address below. A password reset link will be sent to your Gmail inbox.
+                  Enter your registered Super Admin email address below. A secure password reset link will be dispatched to your Gmail inbox.
                 </p>
               </div>
 
@@ -563,7 +593,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
                     required
                     value={forgotEmail}
                     onChange={(e) => setForgotEmail(e.target.value)}
-                    placeholder="superadmin@zapatera.gov.ph"
+                    placeholder="sample@gmail.com"
                     className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                   />
                 </div>
@@ -587,6 +617,98 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
                   <span>Send Reset Link</span>
                 </button>
               </div>
+            </form>
+          )}
+
+          {/* STEP 4: SET NEW PASSWORD (RECOVERY MODE) */}
+          {step === 4 && (
+            <form onSubmit={handleResetPasswordSubmit} className="space-y-4 text-xs">
+              <div className="p-4 bg-emerald-950/40 border border-emerald-800/60 rounded-xl space-y-1.5">
+                <div className="flex items-center space-x-2 text-emerald-300 font-bold">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span>Choose New Super Admin Password</span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  Your recovery link has been verified. Please create and confirm your new secure password.
+                </p>
+              </div>
+
+              {resetError && (
+                <div className="p-3 bg-rose-950/80 border border-rose-800 text-rose-200 rounded-xl font-medium">
+                  {resetError}
+                </div>
+              )}
+
+              {resetSuccess && (
+                <div className="p-3 bg-emerald-950/80 border border-emerald-800 text-emerald-200 rounded-xl font-medium">
+                  {resetSuccess}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1.5">New Password *</label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type={showResetNewPassword ? 'text' : 'password'}
+                    required
+                    value={resetNewPassword}
+                    onChange={(e) => setResetNewPassword(e.target.value)}
+                    placeholder="Enter new password (min. 8 characters)"
+                    className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetNewPassword(!showResetNewPassword)}
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                  >
+                    {showResetNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1.5">Confirm New Password *</label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type={showResetConfirmPassword ? 'text' : 'password'}
+                    required
+                    value={resetConfirmPassword}
+                    onChange={(e) => setResetConfirmPassword(e.target.value)}
+                    placeholder="Re-enter new password"
+                    className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetConfirmPassword(!showResetConfirmPassword)}
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                  >
+                    {showResetConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              {resetConfirmPassword && (
+                <div className="text-[10px]">
+                  {resetNewPassword === resetConfirmPassword ? (
+                    <span className="text-emerald-400 flex items-center space-x-1">
+                      <CheckCircle2 className="w-3 h-3" /> <span>Passwords match</span>
+                    </span>
+                  ) : (
+                    <span className="text-rose-400">Passwords do not match</span>
+                  )}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={resetLoading || !resetNewPassword || resetNewPassword !== resetConfirmPassword}
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
+              >
+                {resetLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                <span>Save New Password & Unlock Account</span>
+              </button>
             </form>
           )}
 

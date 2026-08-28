@@ -4,8 +4,9 @@ import Modal from '../../components/Modal';
 import Badge from '../../components/Badge';
 import { CheckSquare, CheckCircle2, XCircle, AlertCircle, Clock, FileCheck, FileText, UserCheck } from 'lucide-react';
 import { formatDate, formatCurrency, sanitizeInput } from '../../core/security';
+import { CardGridSkeleton } from '../../components/SkeletonLoader';
 
-export default function ProcessDocumentsView({ requests, onUpdateRequestStatus, currentUser }) {
+export default function ProcessDocumentsView({ requests = [], onUpdateRequestStatus, currentUser, loading = false }) {
   const [selectedReq, setSelectedReq] = useState(null);
   const [actionType, setActionType] = useState('approve'); // approve, review, decline
   const [notes, setNotes] = useState('');
@@ -60,9 +61,12 @@ export default function ProcessDocumentsView({ requests, onUpdateRequestStatus, 
       </div>
 
       {/* Verification Desk Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {pendingOrReviewRequests.map((req) => (
-          <div key={req.id} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs flex flex-col justify-between space-y-4 hover:shadow-md transition-shadow">
+      {loading ? (
+        <CardGridSkeleton count={4} isDarkMode={false} />
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {pendingOrReviewRequests.map((req) => (
+            <div key={req.id} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs flex flex-col justify-between space-y-4 hover:shadow-md transition-shadow">
             <div>
               <div className="flex items-start justify-between">
                 <div>
@@ -123,18 +127,19 @@ export default function ProcessDocumentsView({ requests, onUpdateRequestStatus, 
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>Approve Document</span>
               </button>
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
 
-        {pendingOrReviewRequests.length === 0 && (
-          <div className="col-span-full p-12 bg-white rounded-2xl border border-slate-200 text-center space-y-3">
-            <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto" />
-            <h3 className="text-base font-bold text-slate-800">Verification Queue Clear!</h3>
-            <p className="text-xs text-slate-500">All submitted resident requests have been processed.</p>
-          </div>
-        )}
-      </div>
+          {pendingOrReviewRequests.length === 0 && (
+            <div className="col-span-full p-12 bg-white rounded-2xl border border-slate-200 text-center space-y-3">
+              <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto" />
+              <h3 className="text-base font-bold text-slate-800">Verification Queue Clear!</h3>
+              <p className="text-xs text-slate-500">All submitted resident requests have been processed.</p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Action Execution Modal */}
       <Modal
