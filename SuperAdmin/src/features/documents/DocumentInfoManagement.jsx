@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { formatCurrency, sanitizeInput } from '../../core/security';
 import { db } from '../../supabaseClient';
+import DocumentManagement from './DocumentManagement';
 
 export default function DocumentInfoManagement({ docTypes = [], onSaveDocType, onDeleteDocType }) {
   const [subTab, setSubTab] = useState('table'); // 'table' | 'generator'
@@ -325,144 +326,7 @@ export default function DocumentInfoManagement({ docTypes = [], onSaveDocType, o
 
       {/* Sub-Tab 2: Document Generator & Print */}
       {subTab === 'generator' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="space-y-4">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Select Created Document Type</h3>
-            {docTypes.length === 0 ? (
-              <p className="text-xs text-slate-500 bg-white p-4 rounded-2xl border">No document templates available.</p>
-            ) : (
-              docTypes.map((doc) => (
-                <button
-                  key={doc.id || doc.code}
-                  onClick={() => setSelectedDocId(doc.id || doc.code)}
-                  className={`w-full text-left p-4 rounded-2xl border-2 transition-all duration-200 ${
-                    selectedDoc?.code === doc.code
-                      ? 'border-blue-500 bg-blue-50/50 shadow-md shadow-blue-100'
-                      : 'border-slate-100 bg-white hover:border-slate-200'
-                  }`}
-                >
-                  <div className="flex items-center gap-3 mb-2">
-                    <div
-                      className={`p-2 rounded-lg ${
-                        selectedDoc?.code === doc.code ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'
-                      }`}
-                    >
-                      <FileText size={18} />
-                    </div>
-                    <div>
-                      <span className="font-mono text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 mr-2">
-                        {doc.code}
-                      </span>
-                      <span className={`font-bold text-sm ${selectedDoc?.code === doc.code ? 'text-blue-900' : 'text-slate-900'}`}>
-                        {doc.title}
-                      </span>
-                    </div>
-                  </div>
-                  <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">{doc.description}</p>
-                </button>
-              ))
-            )}
-          </div>
-
-          <div className="lg:col-span-2 space-y-6">
-            {selectedDoc ? (
-              <div className="bg-white rounded-3xl shadow-xs border border-slate-200 p-8 min-h-[500px] flex flex-col">
-                <div className="flex items-center justify-between mb-8 pb-4 border-b border-slate-100">
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center border border-blue-100">
-                      <ShieldCheck size={24} />
-                    </div>
-                    <div>
-                      <h4 className="font-extrabold text-slate-900 text-base">Document Generator & Print</h4>
-                      <p className="text-xs text-slate-500">Previewing template for <span className="font-bold text-slate-700">{selectedDoc.title}</span></p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setIsPreviewOpen(true)}
-                    className="flex items-center gap-2 bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-200"
-                  >
-                    <Printer size={18} />
-                    Print Document
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-8 flex-1">
-                  <div className="space-y-6 border-r border-slate-100 pr-6">
-                    <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Document Variables</h5>
-                    <div className="space-y-4">
-                      <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase">Resident Name</label>
-                        <select
-                          value={selectedResident}
-                          onChange={(e) => setSelectedResident(e.target.value)}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none font-medium text-slate-800"
-                        >
-                          {residents.map((r) => (
-                            <option key={r.id} value={r.fullName}>
-                              {r.fullName}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase">Purpose</label>
-                        <input
-                          type="text"
-                          value={purpose}
-                          onChange={(e) => setPurpose(e.target.value)}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none font-medium text-slate-800"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="md:col-span-3 bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200 p-6 flex flex-col items-center text-center overflow-y-auto max-h-[600px]">
-                    <div className="w-full max-w-md bg-white shadow-xl rounded-sm p-8 space-y-6 text-left border border-slate-200 text-xs">
-                      <div className="text-center border-b pb-4">
-                        <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-slate-400">Republic of the Philippines</p>
-                        <p className="text-[11px] font-bold text-slate-900">Province of Cebu</p>
-                        <p className="text-[11px] font-bold text-slate-900">City of Cebu</p>
-                        <p className="text-xs font-black text-blue-600 mt-1 uppercase text-center">Barangay Zapatera</p>
-                      </div>
-
-                      <div className="py-2">
-                        <h5 className="text-center font-black text-base text-slate-900 uppercase tracking-widest underline underline-offset-8 decoration-2 decoration-blue-500">
-                          {selectedDoc.title}
-                        </h5>
-                      </div>
-
-                      <div className="space-y-3 text-slate-700 leading-relaxed text-[11px]">
-                        <p className="font-bold">TO WHOM IT MAY CONCERN:</p>
-                        <p>
-                          This is to certify that <span className="font-bold text-slate-900 underline">{selectedResident || '[RESIDENT NAME]'}</span>, of legal age, Filipino, is a bona fide resident of Barangay Zapatera, Cebu City.
-                        </p>
-                        <p>{selectedDoc.description}</p>
-                        <p>
-                          This certification is being issued upon request for <span className="font-bold text-slate-900 underline">{purpose || '[PURPOSE]'}</span>.
-                        </p>
-                        <p>
-                          Issued this <span className="font-bold text-slate-900">{new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' })}</span>.
-                        </p>
-                      </div>
-
-                      <div className="pt-8 flex justify-end">
-                        <div className="text-center">
-                          <div className="w-40 border-b-2 border-slate-900 mb-1"></div>
-                          <p className="text-[11px] font-black text-slate-900 uppercase">Hon. Ricardo Dalisay</p>
-                          <p className="text-[9px] font-bold text-slate-500 uppercase text-center">Barangay Captain</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="bg-white rounded-3xl p-12 text-center text-slate-400 border border-slate-200">
-                Select a document type to preview generator.
-              </div>
-            )}
-          </div>
-        </div>
+        <DocumentManagement docTypes={docTypes} />
       )}
 
       {/* CRUD Modal for Add / Edit Document Type */}
