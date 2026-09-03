@@ -439,46 +439,70 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center p-4 relative overflow-hidden font-sans">
-      {/* Dynamic Background Glow Effect */}
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-blue-600/15 blur-[120px] rounded-full pointer-events-none" />
-      <div className="absolute bottom-10 right-10 w-96 h-96 bg-indigo-600/10 blur-[100px] rounded-full pointer-events-none" />
+    <div className="min-h-screen w-full flex flex-col lg:flex-row bg-white font-sans text-slate-800 antialiased overflow-x-hidden">
+      {/* LEFT SIDE: Abstract Decorative Fluid/Marble Background (~50% width) */}
+      <div className="relative hidden lg:flex lg:w-1/2 min-h-screen bg-slate-950 overflow-hidden select-none">
+        <img
+          src="/auth-bg.jpg"
+          alt="Abstract decorative fluid background"
+          className="absolute inset-0 w-full h-full object-cover object-center transform scale-105 hover:scale-100 transition-transform duration-1000"
+        />
+        <div className="absolute inset-0 bg-gradient-to-tr from-slate-950/40 via-transparent to-pink-500/15 pointer-events-none" />
+        <div className="absolute inset-0 bg-blue-900/10 pointer-events-none" />
+      </div>
 
-      {/* Main Glassmorphic Container */}
-      <div className="w-full max-w-md bg-slate-900/90 border border-slate-800/80 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden relative z-10">
-        
-        {/* Header */}
-        <div className="p-6 bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 border-b border-slate-800 text-center">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-blue-600/20 border border-blue-500/30 text-blue-400 mb-3 shadow-inner">
-            <ShieldCheck className="w-7 h-7" />
+      {/* RIGHT SIDE: Clean White Background, Top-Left Branding, Centered Form (Max Width ~400px) */}
+      <div className="w-full lg:w-1/2 min-h-screen flex flex-col justify-between p-6 sm:p-10 lg:p-12 bg-white relative">
+        {/* Top-Left Branding */}
+        <div className="flex items-center space-x-3">
+          <div className="w-11 h-11 rounded-xl overflow-hidden shadow-sm border border-slate-200 bg-white flex items-center justify-center shrink-0">
+            <img src="/logo.jpg" alt="Barangay Zapatera" className="w-full h-full object-cover" />
           </div>
-          <h1 className="text-xl font-bold text-white tracking-wide">Barangay Zapatera</h1>
-          <div className="flex items-center justify-center space-x-2 mt-1">
-            <p className="text-xs text-slate-300 font-medium">Executive Super Admin Access Portal</p>
-            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-950 text-indigo-400 border border-indigo-800/80">Super Admin</span>
+          <div>
+            <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight leading-tight">Barangay Zapatera</h2>
+            <div className="flex items-center space-x-1.5">
+              <span className="text-xs font-semibold text-blue-600 tracking-wide uppercase">Executive Portal</span>
+              <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">Super Admin</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Center Content Container (Max-Width 400px) */}
+        <div className="w-full max-w-[400px] mx-auto my-auto py-8 space-y-6">
+          {/* Header Title */}
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+              {step === 1 && 'Super Admin Sign In'}
+              {step === 2 && 'MFA Verification'}
+              {step === 3 && 'Reset Password'}
+              {step === 4 && 'Create New Password'}
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-500 mt-1.5 leading-relaxed">
+              {step === 1 && 'Enter your executive administrator credentials to access full municipal governance controls.'}
+              {step === 2 && 'Enter the 6-digit verification code dispatched to your Gmail inbox.'}
+              {step === 3 && 'Enter your registered Super Admin email address to receive a secure password reset link.'}
+              {step === 4 && 'Choose and confirm a new strong password to restore full access to your account.'}
+            </p>
           </div>
 
+          {/* Progress Indicator for Step 1 & 2 */}
           {step !== 3 && step !== 4 && (
-            <div className="mt-4 flex items-center justify-center space-x-2 text-[11px]">
-              <span className={`px-2.5 py-1 rounded-full font-semibold border ${step === 1 ? 'bg-blue-600/30 text-blue-300 border-blue-500/40' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
+            <div className="flex items-center space-x-2 text-xs">
+              <span className={`px-3 py-1 rounded-full font-semibold transition-all ${step === 1 ? 'bg-blue-50 text-blue-700 border border-blue-200 shadow-xs' : 'bg-slate-100 text-slate-400'}`}>
                 1. Password Auth
               </span>
-              <span className="text-slate-600">→</span>
-              <span className={`px-2.5 py-1 rounded-full font-semibold border ${step === 2 ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500/40' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>
+              <span className="text-slate-300">→</span>
+              <span className={`px-3 py-1 rounded-full font-semibold transition-all ${step === 2 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-xs' : 'bg-slate-100 text-slate-400'}`}>
                 2. Email MFA OTP
               </span>
             </div>
           )}
-        </div>
 
-        {/* Content Body */}
-        <div className="p-6 space-y-4">
-          
           {/* Alerts */}
           {error && (
-            <div className="p-3.5 bg-rose-950/80 border border-rose-800/80 text-rose-200 rounded-xl text-xs space-y-2 shadow-sm">
+            <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs space-y-2 shadow-xs">
               <div className="flex items-start space-x-2.5">
-                <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                 <div className="flex-1 font-medium leading-relaxed">{error}</div>
               </div>
               {showResendConfirmation && (
@@ -487,7 +511,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
                     type="button"
                     onClick={handleResendConfirmation}
                     disabled={resendLoading}
-                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg text-[11px] flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer shadow"
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg text-[11px] flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer shadow-xs transition-colors"
                   >
                     {resendLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Mail className="w-3.5 h-3.5" />}
                     <span>Resend Confirmation Email Link</span>
@@ -498,8 +522,8 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
           )}
 
           {infoMsg && (
-            <div className="p-3.5 bg-blue-950/80 border border-blue-800/80 text-blue-200 rounded-xl text-xs flex items-start space-x-2.5 shadow-sm">
-              <CheckCircle2 className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+            <div className="p-3.5 bg-blue-50 border border-blue-200 text-blue-800 rounded-xl text-xs flex items-start space-x-2.5 shadow-xs">
+              <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
               <div className="flex-1 font-medium leading-relaxed">{infoMsg}</div>
             </div>
           )}
@@ -508,45 +532,45 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
           {step === 1 && (
             <form onSubmit={handleStep1Submit} className="space-y-4 text-xs">
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Super Admin Email</label>
+                <label className="block text-slate-700 font-semibold mb-1.5">Super Admin Email</label>
                 <div className="relative">
-                  <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type="email"
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="sample@gmail.com"
-                    className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
+                    className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-300 text-slate-900 rounded-xl focus:bg-white focus:outline-none focus:ring-3 focus:ring-blue-100 focus:border-blue-600 transition-all font-mono"
                   />
                 </div>
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-slate-300 font-semibold">Account Password</label>
+                  <label className="text-slate-700 font-semibold">Account Password</label>
                   <button
                     type="button"
                     onClick={() => { setStep(3); setError(''); setInfoMsg(''); }}
-                    className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors cursor-pointer"
+                    className="text-[11px] text-blue-600 hover:text-blue-700 font-semibold transition-colors cursor-pointer"
                   >
                     Forgot password?
                   </button>
                 </div>
                 <div className="relative">
-                  <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type={showPassword ? 'text' : 'password'}
                     required
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Enter executive password"
-                    className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
+                    className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-300 text-slate-900 rounded-xl focus:bg-white focus:outline-none focus:ring-3 focus:ring-blue-100 focus:border-blue-600 transition-all font-mono"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                   >
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -556,9 +580,9 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl shadow-lg shadow-blue-600/30 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
+                className="w-full py-3 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold rounded-xl shadow-md shadow-blue-500/20 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
               >
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Authorize Super Admin Credentials</span>}
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Sign In as Super Admin</span>}
                 {!loading && <ArrowRight className="w-4 h-4" />}
               </button>
             </form>
@@ -567,21 +591,21 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
           {/* STEP 2: MFA OTP VERIFICATION */}
           {step === 2 && (
             <form onSubmit={handleStep2Submit} className="space-y-4 text-xs">
-              <div className="p-4 bg-slate-950/70 border border-slate-800/80 rounded-xl space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400 font-medium">Authorizing Executive:</span>
-                  <span className="text-blue-400 font-mono font-bold">{pendingUser?.full_name}</span>
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500 font-medium">Executive User:</span>
+                  <span className="text-blue-700 font-mono font-bold">{pendingUser?.full_name}</span>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400 font-medium">OTP Destination:</span>
-                  <span className="text-slate-300 font-mono">{email}</span>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500 font-medium">OTP Destination:</span>
+                  <span className="text-slate-700 font-mono font-medium">{email}</span>
                 </div>
               </div>
 
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Enter 6-Digit Verification Code</label>
+                <label className="block text-slate-700 font-semibold mb-1.5">Enter 6-Digit Verification Code</label>
                 <div className="relative">
-                  <KeyRound className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <KeyRound className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type="text"
                     maxLength={6}
@@ -590,7 +614,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
                     value={otpInput}
                     onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
                     placeholder="• • • • • •"
-                    className="w-full pl-10 pr-3.5 py-3 bg-slate-950 border border-slate-800 text-white rounded-xl text-center tracking-[0.5em] font-mono text-base font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full pl-10 pr-3.5 py-3 bg-slate-50 border border-slate-300 text-slate-900 rounded-xl text-center tracking-[0.5em] font-mono text-base font-bold focus:bg-white focus:outline-none focus:ring-3 focus:ring-blue-100 focus:border-blue-600 transition-all"
                   />
                 </div>
               </div>
@@ -600,7 +624,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
                   type="button"
                   onClick={handleResendOTP}
                   disabled={loading}
-                  className="text-blue-400 hover:text-blue-300 flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
+                  className="text-blue-600 hover:text-blue-700 font-semibold flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
                   <span>Resend Code</span>
@@ -609,7 +633,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
                 <button
                   type="button"
                   onClick={() => { setStep(1); setOtpInput(''); setError(''); }}
-                  className="text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  className="text-slate-500 hover:text-slate-800 font-medium transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -618,10 +642,10 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
               <button
                 type="submit"
                 disabled={loading || otpInput.length !== 6}
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-semibold rounded-xl shadow-md shadow-emerald-500/20 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
               >
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-                <span>Verify MFA & Grant Access</span>
+                <span>Verify MFA & Access Portal</span>
               </button>
             </form>
           )}
@@ -629,39 +653,39 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
           {/* STEP 3: FORGOT PASSWORD */}
           {step === 3 && (
             <form onSubmit={handleForgotPasswordSubmit} className="space-y-4 text-xs">
-              <div className="p-4 bg-blue-950/40 border border-blue-800/60 rounded-xl space-y-1.5">
-                <div className="flex items-center space-x-2 text-blue-300 font-bold">
-                  <HelpCircle className="w-4 h-4 text-blue-400" />
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl space-y-1.5">
+                <div className="flex items-center space-x-2 text-blue-900 font-bold">
+                  <HelpCircle className="w-4 h-4 text-blue-600" />
                   <span>Reset Super Admin Password</span>
                 </div>
-                <p className="text-[11px] text-slate-300 leading-relaxed">
-                  Enter your registered Super Admin email address below. A secure password reset link will be dispatched to your Gmail inbox.
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  Enter your registered email address below. A secure password reset link will be dispatched to your Gmail inbox.
                 </p>
               </div>
 
               {forgotError && (
-                <div className="p-3 bg-rose-950/80 border border-rose-800 text-rose-200 rounded-xl font-medium">
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl font-medium">
                   {forgotError}
                 </div>
               )}
 
               {forgotSuccess && (
-                <div className="p-3 bg-emerald-950/80 border border-emerald-800 text-emerald-200 rounded-xl font-medium">
+                <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl font-medium">
                   {forgotSuccess}
                 </div>
               )}
 
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Account Email Address</label>
+                <label className="block text-slate-700 font-semibold mb-1.5">Account Email Address</label>
                 <div className="relative">
-                  <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type="email"
                     required
                     value={forgotEmail}
                     onChange={(e) => setForgotEmail(e.target.value)}
                     placeholder="sample@gmail.com"
-                    className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-300 text-slate-900 rounded-xl focus:bg-white focus:outline-none focus:ring-3 focus:ring-blue-100 focus:border-blue-600 transition-all font-mono"
                   />
                 </div>
               </div>
@@ -670,7 +694,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
                 <button
                   type="button"
                   onClick={() => { setStep(1); setForgotError(''); setForgotSuccess(''); }}
-                  className="text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  className="text-slate-500 hover:text-slate-800 font-medium transition-colors cursor-pointer"
                 >
                   ← Back to Login
                 </button>
@@ -678,7 +702,7 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
                 <button
                   type="submit"
                   disabled={forgotLoading}
-                  className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl shadow-lg shadow-blue-600/30 flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
+                  className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl shadow-md shadow-blue-500/20 flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
                 >
                   {forgotLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
                   <span>Send Reset Link</span>
@@ -690,44 +714,44 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
           {/* STEP 4: SET NEW PASSWORD (RECOVERY MODE) */}
           {step === 4 && (
             <form onSubmit={handleResetPasswordSubmit} className="space-y-4 text-xs">
-              <div className="p-4 bg-emerald-950/40 border border-emerald-800/60 rounded-xl space-y-1.5">
-                <div className="flex items-center space-x-2 text-emerald-300 font-bold">
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                  <span>Choose New Super Admin Password</span>
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1.5">
+                <div className="flex items-center space-x-2 text-emerald-900 font-bold">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  <span>Choose New Password</span>
                 </div>
-                <p className="text-[11px] text-slate-300 leading-relaxed">
+                <p className="text-[11px] text-slate-600 leading-relaxed">
                   Your recovery link has been verified. Please create and confirm your new secure password.
                 </p>
               </div>
 
               {resetError && (
-                <div className="p-3 bg-rose-950/80 border border-rose-800 text-rose-200 rounded-xl font-medium">
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl font-medium">
                   {resetError}
                 </div>
               )}
 
               {resetSuccess && (
-                <div className="p-3 bg-emerald-950/80 border border-emerald-800 text-emerald-200 rounded-xl font-medium">
+                <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl font-medium">
                   {resetSuccess}
                 </div>
               )}
 
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">New Password *</label>
+                <label className="block text-slate-700 font-semibold mb-1.5">New Password *</label>
                 <div className="relative">
-                  <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type={showResetNewPassword ? 'text' : 'password'}
                     required
                     value={resetNewPassword}
                     onChange={(e) => setResetNewPassword(e.target.value)}
                     placeholder="Enter new password (min. 8 characters)"
-                    className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                    className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-300 text-slate-900 rounded-xl focus:bg-white focus:outline-none focus:ring-3 focus:ring-emerald-100 focus:border-emerald-600 transition-all font-mono"
                   />
                   <button
                     type="button"
                     onClick={() => setShowResetNewPassword(!showResetNewPassword)}
-                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                   >
                     {showResetNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -735,21 +759,21 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
               </div>
 
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Confirm New Password *</label>
+                <label className="block text-slate-700 font-semibold mb-1.5">Confirm New Password *</label>
                 <div className="relative">
-                  <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type={showResetConfirmPassword ? 'text' : 'password'}
                     required
                     value={resetConfirmPassword}
                     onChange={(e) => setResetConfirmPassword(e.target.value)}
                     placeholder="Re-enter new password"
-                    className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-800 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                    className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-300 text-slate-900 rounded-xl focus:bg-white focus:outline-none focus:ring-3 focus:ring-emerald-100 focus:border-emerald-600 transition-all font-mono"
                   />
                   <button
                     type="button"
                     onClick={() => setShowResetConfirmPassword(!showResetConfirmPassword)}
-                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                   >
                     {showResetConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -759,11 +783,11 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
               {resetConfirmPassword && (
                 <div className="text-[10px]">
                   {resetNewPassword === resetConfirmPassword ? (
-                    <span className="text-emerald-400 flex items-center space-x-1">
+                    <span className="text-emerald-600 font-semibold flex items-center space-x-1">
                       <CheckCircle2 className="w-3 h-3" /> <span>Passwords match</span>
                     </span>
                   ) : (
-                    <span className="text-rose-400">Passwords do not match</span>
+                    <span className="text-rose-600 font-semibold">Passwords do not match</span>
                   )}
                 </div>
               )}
@@ -771,21 +795,19 @@ export default function SuperAdminLoginPage({ onLoginSuccess }) {
               <button
                 type="submit"
                 disabled={resetLoading || !resetNewPassword || resetNewPassword !== resetConfirmPassword}
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-semibold rounded-xl shadow-md shadow-emerald-500/20 transition-all flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
               >
                 {resetLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
                 <span>Save New Password & Unlock Account</span>
               </button>
             </form>
           )}
-
         </div>
 
-        {/* Footer info */}
-        <div className="p-3 bg-slate-950/80 border-t border-slate-800 text-center text-[10px] text-slate-500">
-          Barangay Zapatera Security Framework • 3-Attempt Lockout Policy & Supabase Email MFA Active
+        {/* Bottom Footer Info */}
+        <div className="pt-6 border-t border-slate-100 text-center text-[11px] text-slate-400">
+          Barangay Zapatera Information Management System • Executive Access
         </div>
-
       </div>
     </div>
   );
