@@ -192,7 +192,7 @@ export default function LoginPage({ onLoginSuccess }) {
     // 1. Rate Limiting Check
     const rateLimit = await checkRateLimit(cleanEmail);
     if (!rateLimit.allowed) {
-      setError(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
+      setError(rateLimit.message || 'Too many authentication attempts. Please wait 10 seconds before trying again.');
       setLoading(false);
       return;
     }
