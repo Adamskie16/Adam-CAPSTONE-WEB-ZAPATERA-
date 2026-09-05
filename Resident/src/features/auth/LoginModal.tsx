@@ -1,9 +1,10 @@
 // Resident/src/features/auth/LoginModal.tsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Modal from '../../components/Modal';
 import {
   Mail,
   Lock,
+  Unlock,
   KeyRound,
   ShieldAlert,
   CheckCircle2,
@@ -18,6 +19,7 @@ import {
 import { validateEmail, checkRateLimit, isAccountLocked, recordFailedAttempt, resetFailedAttempts } from '../../core/security';
 import { supabase, isSupabaseConfigured } from '../../core/supabase';
 import { ResidentUser } from '../../types';
+import UnlockAccountModal from '../../components/UnlockAccountModal';
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -31,6 +33,8 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [isLocked, setIsLocked] = useState(false);
+  const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
 
   // Forgot Password State
   const [forgotEmail, setForgotEmail] = useState('');
@@ -120,18 +124,19 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
 
     const cleanEmail = email.trim().toLowerCase();
 
-    // 1. Rate Limiting Check
+    // 1. Rate Limiting Check (10-second interval)
     const rateLimit = await checkRateLimit(cleanEmail);
     if (!rateLimit.allowed) {
-      setError(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
+      setError(rateLimit.message || 'Too many authentication attempts. Please wait 10 seconds before trying again.');
       setLoading(false);
       return;
     }
 
-    // 2. Account Lockout Check
+    // 2. Account Lockout Check (Pre-auth check)
     const locked = await isAccountLocked(cleanEmail);
     if (locked) {
-      setError('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Zapatera administration to unlock your account.');
+      setIsLocked(true);
+      setError('Your account has been locked after 3 failed login attempts. Please unlock your account using the verification code sent to your email.');
       setLoading(false);
       return;
     }
@@ -140,7 +145,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
     let profile: any = null;
     try {
       if (isSupabaseConfigured()) {
-        const { data, error: profErr } = await supabase
+        const { data } = await supabase
           .from('profiles')
           .select('*')
           .eq('email', cleanEmail)
@@ -149,7 +154,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
         profile = data;
       }
     } catch (e) {
-      console.warn('Profiles check error:', e);
+      // Handled silently
     }
 
     if (!profile) {
@@ -178,9 +183,11 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
 
           const lockRes = await recordFailedAttempt(cleanEmail, 'resident');
           if (lockRes.isLockedOut || lockRes.attempts >= 3) {
-            setError('ACCOUNT LOCKED OUT: You have exceeded 3 failed login attempts. Your account has been locked for security. Please contact Barangay Zapatera administration to request an unlock.');
+            setIsLocked(true);
+            setError('Your account has been locked after 3 failed login attempts. Please unlock your account using the verification code sent to your email.');
           } else {
-            setError('Incorrect email or password.');
+            const remaining = lockRes.remaining ?? (3 - lockRes.attempts);
+            setError(`Invalid email or password. You have ${remaining} ${remaining === 1 ? 'attempt' : 'attempts'} remaining.`);
           }
           setLoading(false);
           return;
@@ -194,8 +201,9 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
       return;
     }
 
-    // 5. Proceed to OTP verification -> Send 6-Digit Code to Gmail
+    // 5. Proceed to OTP verification -> Reset lockout and Send 6-Digit Code to Gmail
     await resetFailedAttempts(cleanEmail);
+    setIsLocked(false);
 
     try {
       if (isSupabaseConfigured()) {
@@ -432,11 +440,27 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
     <Modal isOpen={isOpen} onClose={onClose} title="Resident Account Sign In" maxWidth="max-w-md" darkMode={true}>
       <div className="space-y-4 text-xs font-sans text-slate-100">
         {error && (
-          <div className="p-3 bg-rose-950/80 text-rose-200 border border-rose-800 rounded-xl font-semibold space-y-2">
+          <div className={`p-3 border rounded-xl font-semibold space-y-2 ${isLocked ? 'bg-rose-950/90 text-rose-200 border-rose-600 ring-1 ring-rose-500' : 'bg-rose-950/80 text-rose-200 border-rose-800'}`}>
             <div className="flex items-start space-x-2">
-              <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-              <span>{error}</span>
+              {isLocked ? (
+                <Lock className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              ) : (
+                <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              )}
+              <span className="leading-relaxed">{error}</span>
             </div>
+            {isLocked && (
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsUnlockModalOpen(true)}
+                  className="w-full px-3 py-2 bg-red-600 hover:bg-red-500 text-white font-semibold rounded-lg text-xs flex items-center justify-center space-x-1.5 shadow transition-colors cursor-pointer"
+                >
+                  <Unlock className="w-3.5 h-3.5" />
+                  <span>Unlock Account with Gmail Code</span>
+                </button>
+              </div>
+            )}
             {showResendConfirmation && (
               <div className="pt-1">
                 <button
@@ -732,6 +756,17 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
           </form>
         )}
       </div>
+
+      <UnlockAccountModal
+        visible={isUnlockModalOpen}
+        initialEmail={email}
+        onClose={() => setIsUnlockModalOpen(false)}
+        onUnlocked={(unlockedEmail) => {
+          setIsLocked(false);
+          setError('');
+          setInfoMsg(`Your account (${unlockedEmail}) has been successfully unlocked. You may now log in.`);
+        }}
+      />
     </Modal>
   );
 }

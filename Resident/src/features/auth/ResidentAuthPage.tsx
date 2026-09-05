@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Lock,
+  Unlock,
   Shield,
   ShieldCheck,
   Info,
@@ -32,6 +33,7 @@ import { ResidentUser } from '../../types';
 import { validateEmail, sanitizeInput, checkRateLimit, isAccountLocked, recordFailedAttempt, resetFailedAttempts } from '../../core/security';
 import { supabase, isSupabaseConfigured } from '../../core/supabase';
 import { MobileStorage } from '../../core/storage';
+import UnlockAccountModal from '../../components/UnlockAccountModal';
 
 // ============================================================================
 // SAMPLE SITIO LIST FOR BARANGAY ZAPATERA
@@ -80,6 +82,8 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
   const [loginEmail, setLoginEmail] = useState<string>('');
   const [loginPassword, setLoginPassword] = useState<string>('');
   const [showLoginPassword, setShowLoginPassword] = useState<boolean>(false);
+  const [isLocked, setIsLocked] = useState<boolean>(false);
+  const [isUnlockModalOpen, setIsUnlockModalOpen] = useState<boolean>(false);
 
   // Forgot Password & Reset Password State
   const [forgotEmail, setForgotEmail] = useState<string>('');
@@ -196,10 +200,10 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
     setLoading(true);
     const cleanEmail = loginEmail.toLowerCase().trim();
 
-    // 1. CHECK RATE LIMIT
+    // 1. CHECK RATE LIMIT (10-second interval)
     const rateLimit = await checkRateLimit(cleanEmail);
     if (!rateLimit.allowed) {
-      setErrorMessage(rateLimit.message || 'Too many authentication attempts. Please wait 15 minutes before trying again.');
+      setErrorMessage(rateLimit.message || 'Too many authentication attempts. Please wait 10 seconds before trying again.');
       setLoading(false);
       return;
     }
@@ -207,7 +211,8 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
     // 2. CHECK IF ACCOUNT IS LOCKED (3 Failed Attempts)
     const locked = await isAccountLocked(cleanEmail);
     if (locked) {
-      setErrorMessage('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Zapatera administration to unlock your account.');
+      setIsLocked(true);
+      setErrorMessage('Your account has been locked after 3 failed login attempts. Please unlock your account using the verification code sent to your email.');
       setLoading(false);
       return;
     }
@@ -216,7 +221,7 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
     let profData: any = null;
     try {
       if (isSupabaseConfigured()) {
-        const { data, error: profErr } = await supabase
+        const { data } = await supabase
           .from('profiles')
           .select('*')
           .eq('email', cleanEmail)
@@ -225,7 +230,7 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
         profData = data;
       }
     } catch (e) {
-      console.warn('Profiles check exception:', e);
+      // Handled silently
     }
 
     if (!profData) {
@@ -252,12 +257,13 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
             return;
           }
 
-          await recordFailedAttempt(cleanEmail);
-          const updatedLock = await isAccountLocked(cleanEmail);
-          if (updatedLock) {
-            setErrorMessage('ACCOUNT LOCKED OUT: 3 consecutive failed login attempts detected. Please contact Barangay Zapatera administration.');
+          const lockRes = await recordFailedAttempt(cleanEmail, 'resident');
+          if (lockRes.isLockedOut || lockRes.attempts >= 3) {
+            setIsLocked(true);
+            setErrorMessage('Your account has been locked after 3 failed login attempts. Please unlock your account using the verification code sent to your email.');
           } else {
-            setErrorMessage('Incorrect email or password.');
+            const remaining = lockRes.remaining ?? (3 - lockRes.attempts);
+            setErrorMessage(`Invalid email or password. You have ${remaining} ${remaining === 1 ? 'attempt' : 'attempts'} remaining.`);
           }
 
           setLoading(false);
@@ -272,8 +278,9 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
       return;
     }
 
-    // 5. SUCCESSFUL PASSWORD VERIFICATION -> DISPATCH 6-DIGIT OTP TO GMAIL
+    // 5. SUCCESSFUL PASSWORD VERIFICATION -> RESET LOCKOUT AND DISPATCH 6-DIGIT OTP TO GMAIL
     await resetFailedAttempts(cleanEmail);
+    setIsLocked(false);
 
     try {
       if (isSupabaseConfigured()) {
@@ -739,12 +746,23 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
       ) : null}
 
       {errorMessage ? (
-        <View style={styles.errorBox}>
+        <View style={[styles.errorBox, isLocked && styles.lockedBox]}>
           <View style={styles.alertHeaderRow}>
-            <AlertTriangle size={18} color="#f43f5e" />
-            <Text style={styles.errorTitle}>Validation Alert</Text>
+            {isLocked ? <Lock size={18} color="#f43f5e" /> : <AlertTriangle size={18} color="#f43f5e" />}
+            <Text style={styles.errorTitle}>{isLocked ? 'Account Security Lockout' : 'Validation Alert'}</Text>
           </View>
           <Text style={styles.errorText}>{errorMessage}</Text>
+          {isLocked ? (
+            <TouchableOpacity
+              style={[styles.primaryBtn, { marginTop: 10, paddingVertical: 10, backgroundColor: '#dc2626' }]}
+              onPress={() => setIsUnlockModalOpen(true)}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                <Unlock size={16} color="#ffffff" />
+                <Text style={styles.primaryBtnText}>Unlock Account with Gmail Code</Text>
+              </View>
+            </TouchableOpacity>
+          ) : null}
           {showResendConfirmation ? (
             <TouchableOpacity
               style={[styles.primaryBtn, { marginTop: 8, paddingVertical: 8, backgroundColor: '#2563eb' }]}
@@ -1381,11 +1399,28 @@ export default function ResidentAuthPage({ onLoginSuccess }: ResidentAuthPagePro
           </View>
         </View>
       </Modal>
+
+      {/* Account Unlock Modal */}
+      <UnlockAccountModal
+        visible={isUnlockModalOpen}
+        initialEmail={loginEmail}
+        onClose={() => setIsUnlockModalOpen(false)}
+        onUnlocked={(unlockedEmail) => {
+          setIsLocked(false);
+          setErrorMessage('');
+          setSuccessBanner(`Your account (${unlockedEmail}) has been successfully unlocked. You may now log in.`);
+        }}
+      />
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
+  lockedBox: {
+    backgroundColor: 'rgba(127, 29, 29, 0.45)',
+    borderColor: '#ef4444',
+    borderWidth: 1.5,
+  },
   container: {
     flex: 1,
     backgroundColor: '#090d16',
