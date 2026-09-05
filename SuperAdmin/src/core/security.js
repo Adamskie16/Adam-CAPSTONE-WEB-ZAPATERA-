@@ -78,9 +78,26 @@ export const logActivityEvent = async (action, details, level = 'info', userEmai
   } catch (err) {}
 };
 
-export const checkRateLimit = async (identifier, maxAttempts = 10, windowMinutes = 15) => {
+/**
+ * Rate Limiting Check with 10-second cooldown interval
+ */
+export const checkRateLimit = async (identifier, maxAttempts = 5, windowSeconds = 10) => {
   const cleanId = String(identifier).toLowerCase().trim();
   const now = new Date();
+
+  let localLastAttempt = 0;
+  if (typeof localStorage !== 'undefined') {
+    localLastAttempt = parseInt(localStorage.getItem(`zapatera_ratelimit_${cleanId}`) || '0', 10);
+    const secondsPassed = Math.floor((now.getTime() - localLastAttempt) / 1000);
+    if (localLastAttempt > 0 && secondsPassed < windowSeconds) {
+      const waitRemaining = windowSeconds - secondsPassed;
+      return {
+        allowed: false,
+        remaining: 0,
+        message: `Too many authentication attempts. Please wait ${waitRemaining} second${waitRemaining > 1 ? 's' : ''} before trying again.`,
+      };
+    }
+  }
   
   try {
     if (isSupabaseConfigured()) {
@@ -91,33 +108,50 @@ export const checkRateLimit = async (identifier, maxAttempts = 10, windowMinutes
         .maybeSingle();
 
       if (!error && limitData) {
-        const windowStart = new Date(limitData.window_start || limitData.last_attempt);
-        const minutesDiff = (now - windowStart) / (1000 * 60);
+        const lastAttempt = new Date(limitData.last_attempt || limitData.window_start).getTime();
+        const secondsDiff = Math.floor((now.getTime() - lastAttempt) / 1000);
 
-        if (minutesDiff > windowMinutes) {
+        if (secondsDiff < windowSeconds && limitData.attempts >= maxAttempts) {
+          const waitRemaining = windowSeconds - secondsDiff;
+          return {
+            allowed: false,
+            remaining: 0,
+            message: `Too many authentication attempts. Please wait ${waitRemaining} second${waitRemaining > 1 ? 's' : ''} before trying again.`,
+          };
+        } else if (secondsDiff >= windowSeconds) {
           await supabase
             .from('rate_limits')
             .update({ attempts: 1, window_start: now.toISOString(), last_attempt: now.toISOString() })
             .eq('id', limitData.id);
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(`zapatera_ratelimit_${cleanId}`, String(now.getTime()));
+          }
           return { allowed: true, remaining: maxAttempts - 1 };
-        } else if (limitData.attempts >= maxAttempts) {
-          return { allowed: false, remaining: 0, message: 'Too many authentication attempts. Please wait 15 minutes before trying again.' };
         } else {
           await supabase
             .from('rate_limits')
             .update({ attempts: limitData.attempts + 1, last_attempt: now.toISOString() })
             .eq('id', limitData.id);
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(`zapatera_ratelimit_${cleanId}`, String(now.getTime()));
+          }
           return { allowed: true, remaining: maxAttempts - (limitData.attempts + 1) };
         }
       } else if (!error) {
         await supabase
           .from('rate_limits')
           .insert([{ identifier: cleanId, attempts: 1, window_start: now.toISOString(), last_attempt: now.toISOString() }]);
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem(`zapatera_ratelimit_${cleanId}`, String(now.getTime()));
+        }
         return { allowed: true, remaining: maxAttempts - 1 };
       }
     }
   } catch (err) {}
 
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(`zapatera_ratelimit_${cleanId}`, String(now.getTime()));
+  }
   return { allowed: true, remaining: maxAttempts - 1 };
 };
 
