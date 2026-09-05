@@ -169,7 +169,7 @@ export const isAccountLocked = async (email) => {
 };
 
 /**
- * Record a consecutive failed password attempt.
+ * Record a consecutive failed password attempt directly on profiles table.
  */
 export const recordFailedAttempt = async (email, userRole = 'super_admin') => {
   const cleanEmail = String(email).toLowerCase().trim();
@@ -214,17 +214,7 @@ export const recordFailedAttempt = async (email, userRole = 'super_admin') => {
 
   try {
     if (isSupabaseConfigured()) {
-      let rpcSuccess = false;
-      try {
-        const { data: rpcData, error: rpcErr } = await supabase.rpc('record_failed_login_attempt', {
-          user_email: cleanEmail,
-        });
-        if (!rpcErr && rpcData?.success) {
-          rpcSuccess = true;
-        }
-      } catch (e) {}
-
-      if (!rpcSuccess && profile?.id) {
+      if (profile?.id) {
         await supabase
           .from('profiles')
           .update({
@@ -235,23 +225,34 @@ export const recordFailedAttempt = async (email, userRole = 'super_admin') => {
             updated_at: nowTs,
           })
           .eq('id', profile.id);
+      } else {
+        await supabase
+          .from('profiles')
+          .update({
+            failed_attempts: currentAttempts,
+            is_locked: isLockedOut,
+            is_active: !isLockedOut,
+            locked_at: isLockedOut ? nowTs : null,
+            updated_at: nowTs,
+          })
+          .eq('email', cleanEmail);
+      }
 
-        if (isLockedOut) {
-          await supabase
-            .from('account_unlock_requests')
-            .upsert([{
-              user_id: profile.id,
-              email: cleanEmail,
-              full_name: profile.full_name || cleanEmail.split('@')[0],
-              role: profile.role || userRole,
-              status: 'pending',
-              failed_attempts: currentAttempts,
-              locked_at: nowTs,
-              created_at: nowTs,
-            }], { onConflict: 'email' });
+      if (isLockedOut) {
+        await supabase
+          .from('account_unlock_requests')
+          .upsert([{
+            user_id: profile?.id || null,
+            email: cleanEmail,
+            full_name: profile?.full_name || cleanEmail.split('@')[0],
+            role: profile?.role || userRole,
+            status: 'pending',
+            failed_attempts: currentAttempts,
+            locked_at: nowTs,
+            created_at: nowTs,
+          }], { onConflict: 'email' });
 
-          broadcastSecurityEvent('ACCOUNT_LOCKED', cleanEmail, { attempts: currentAttempts, lockedAt: nowTs });
-        }
+        broadcastSecurityEvent('ACCOUNT_LOCKED', cleanEmail, { attempts: currentAttempts, lockedAt: nowTs });
       }
     }
   } catch (err) {}
@@ -275,33 +276,21 @@ export const resetFailedAttempts = async (email) => {
 
   try {
     if (isSupabaseConfigured()) {
-      let rpcSuccess = false;
-      try {
-        const { data: rpcData, error: rpcErr } = await supabase.rpc('reset_account_lockout', {
-          user_email: cleanEmail,
-        });
-        if (!rpcErr && rpcData?.success) {
-          rpcSuccess = true;
-        }
-      } catch (e) {}
+      await supabase
+        .from('profiles')
+        .update({
+          failed_attempts: 0,
+          is_locked: false,
+          is_active: true,
+          locked_at: null,
+          updated_at: nowTs,
+        })
+        .eq('email', cleanEmail);
 
-      if (!rpcSuccess) {
-        await supabase
-          .from('profiles')
-          .update({
-            failed_attempts: 0,
-            is_locked: false,
-            is_active: true,
-            locked_at: null,
-            updated_at: nowTs,
-          })
-          .eq('email', cleanEmail);
-
-        await supabase
-          .from('account_unlock_requests')
-          .delete()
-          .eq('email', cleanEmail);
-      }
+      await supabase
+        .from('account_unlock_requests')
+        .delete()
+        .eq('email', cleanEmail);
 
       broadcastSecurityEvent('ACCOUNT_UNLOCKED', cleanEmail);
     }
